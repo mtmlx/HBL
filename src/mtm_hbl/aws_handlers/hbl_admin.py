@@ -245,6 +245,12 @@ async def _confirm_reissue(event: dict[str, Any], user: AdminUser) -> dict[str, 
             logging.exception("HBL_REISSUE_RECONCILIATION_REQUIRED task=%s operation=%s", task_id, operation_id)
             try:
                 journal.fail()
+                if journal.claim_failure_comment():
+                    from mtm_hbl.aws_handlers.original_issuer import _post_failure_comment
+                    settings = _lambda_settings()
+                    failure_client = ClickUpClient(settings, _clickup_access_token())
+                    await _post_failure_comment(failure_client, task_id,
+                        "Manager reissue needs reconciliation. A replacement may already exist. Do not submit another reissue.", mode="issue")
             except Exception:
                 logging.exception("HBL_CHECKPOINT_FAILURE_RECONCILE_BEFORE_RETRY")
             raise

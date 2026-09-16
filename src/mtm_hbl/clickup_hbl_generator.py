@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from mtm_hbl.clickup_connector.client import ClickUpClient
 from mtm_hbl.config import AppConfig, Settings
+from mtm_hbl.safe_paths import confined_path, filename_component
 from mtm_hbl.models.canonical import CanonicalHblData
 from mtm_hbl.models.clickup import ClickUpTaskData
 from mtm_hbl.pdf.hbl_package import generate_bill_of_lading_draft, generate_bill_of_lading_package
@@ -92,10 +93,12 @@ async def generate_hbl_from_clickup(
     expected_data_hash: str | None = None,
 ) -> ClickUpHblGenerationResult:
     task_id = parse_clickup_task_id(task_ref)
+    filename_component(task_id)
     task = await client.get_task(task_id)
     clickup_values = client.extract_configured_fields(task, app_config)
     data = _data_from_clickup_task(task, clickup_values, app_config)
     _enforce_clickup_hbl_number(data, clickup_values)
+    filename_component(data.shipment.mtm_hbl_no or task_id)
     if expected_data_hash and canonical_fingerprint(data) != expected_data_hash:
         raise ValueError("Shipment changed after preview; start a fresh confirmation.")
 
@@ -117,9 +120,10 @@ async def generate_hbl_from_clickup(
             "Cannot issue HBL automatically because the ClickUp original field already "
             "contains an attachment. Use the controlled reissue/void flow."
         )
-    base_output_dir = output_dir or _default_output_dir(settings.runs_dir, task_id, data)
+    base_output_dir = output_dir if output_dir is not None else confined_path(
+        _default_output_dir(settings.runs_dir, task_id, data), settings.runs_dir)
     base_output_dir.mkdir(parents=True, exist_ok=True)
-    review_path = base_output_dir / "approved_review_from_clickup.json"
+    review_path = confined_path(base_output_dir / "approved_review_from_clickup.json", base_output_dir)
     review_path.write_text(data.model_dump_json(indent=2), encoding="utf-8")
 
     registration = None
@@ -131,7 +135,7 @@ async def generate_hbl_from_clickup(
         _require_issuance_config(verification_base_url, bucket, table)
         package_id = f"pkg_{uuid4().hex}"
         verification_id_suffix = _verification_id_suffix(package_id)
-        pdf_path = base_output_dir / f"HBL_Package_{data.shipment.mtm_hbl_no}.pdf"
+        pdf_path = confined_path(base_output_dir / f"HBL_Package_{data.shipment.mtm_hbl_no}.pdf", base_output_dir)
         generate_bill_of_lading_package(
             data,
             pdf_path,
@@ -150,6 +154,7 @@ async def generate_hbl_from_clickup(
                 table_name=table,
                 region_name=region,
                 verification_base_url=verification_base_url,
+                allowed_pdf_root=base_output_dir,
             ),
             status="PREPARED" if prepare_only else "ISSUED",
             package_id=package_id,
@@ -157,7 +162,7 @@ async def generate_hbl_from_clickup(
             issued_by=issued_by,
         )
     else:
-        pdf_path = base_output_dir / f"Draft_{data.shipment.mtm_hbl_no or task_id}_v1.pdf"
+        pdf_path = confined_path(base_output_dir / f"Draft_{data.shipment.mtm_hbl_no or task_id}_v1.pdf", base_output_dir)
         generate_bill_of_lading_draft(data, pdf_path, logo_path=logo_path)
 
     result = ClickUpHblGenerationResult(

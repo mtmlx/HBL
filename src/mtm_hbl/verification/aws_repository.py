@@ -10,6 +10,7 @@ from uuid import uuid4
 import boto3
 
 from mtm_hbl.models.canonical import CanonicalHblData
+from mtm_hbl.safe_paths import confined_path
 from mtm_hbl.pdf.hbl_package import (
     build_document_page_set,
     validate_bill_of_lading_package,
@@ -28,6 +29,7 @@ class AwsVerificationConfig:
     table_name: str
     region_name: str = "us-east-1"
     verification_base_url: str = ""
+    allowed_pdf_root: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -50,11 +52,13 @@ def register_issued_package(
     verification_id_suffix: str = "",
     issued_by: str = "Andrea Piedad Velasquez Castellon",
 ) -> IssuedPackageRegistration:
+    pdf_path = confined_path(pdf_path, config.allowed_pdf_root)
     if not pdf_path.exists():
         raise FileNotFoundError(f"PDF package not found: {pdf_path}")
     if not data.shipment.mtm_hbl_no:
         raise ValueError("HBL number is required to register a verification package.")
-    validate_bill_of_lading_package(pdf_path)
+    pdf_bytes = pdf_path.read_bytes()
+    validate_bill_of_lading_package(pdf_bytes)
 
     package_id = package_id or f"pkg_{uuid4().hex}"
     issued_at = datetime.now(timezone.utc).isoformat()
@@ -66,7 +70,7 @@ def register_issued_package(
     canonical_json = json.dumps(data.model_dump(mode="json"), ensure_ascii=False, indent=2).encode(
         "utf-8"
     )
-    pdf_digest = sha256(pdf_path.read_bytes()).hexdigest()
+    pdf_digest = sha256(pdf_bytes).hexdigest()
     canonical_digest = sha256(canonical_json).hexdigest()
 
     s3 = boto3.client("s3", region_name=config.region_name)
@@ -74,7 +78,7 @@ def register_issued_package(
     table = dynamodb.Table(config.table_name)
 
     s3.put_object(
-        Bucket=config.bucket_name, Key=pdf_s3_key, Body=pdf_path.read_bytes(),
+        Bucket=config.bucket_name, Key=pdf_s3_key, Body=pdf_bytes,
         IfNoneMatch="*", ServerSideEncryption="AES256", ContentType="application/pdf",
         Metadata={
                 "hbl-number": data.shipment.mtm_hbl_no,

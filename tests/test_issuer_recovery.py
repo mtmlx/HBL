@@ -159,7 +159,11 @@ def test_worker_resume_downloads_existing_package_never_generates(jobs, monkeypa
             asyncio.run(module._process_message({'task_id': 'task'}))
         generate.assert_not_called()
         client.upload_attachment_to_custom_field.assert_not_called()
-        client.post_comment.assert_not_called()
+        assert client.post_comment.await_count == 1
+        assert 'Recovery' in client.post_comment.call_args.args[1]
+        with pytest.raises(RuntimeError, match='hash mismatch'):
+            asyncio.run(module._process_message({'task_id': 'task'}))
+        assert client.post_comment.await_count == 1
         return
     result = asyncio.run(module._process_message({'task_id': 'task'}))
     assert result['package_id'] == 'pkg_existing'

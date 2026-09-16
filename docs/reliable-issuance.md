@@ -125,6 +125,16 @@ or reissued by the live test. Use `tools/test_atomic_switch_aws.py` to repeat it
 
 ## Configuration and release
 
+Current configuration update: queue visibility was raised from 180 to 1080 seconds
+and read back. SNS topic `mtm-hbl-recovery-alerts-dev` and worker DLQ/recovery alarms
+were created and verified. The topic currently has no subscribers; its delivery
+email/endpoint is pending. The code also makes one assigned ClickUp recovery-comment
+attempt per failed operation. It claims the attempt durably before posting so a
+lost response cannot cause duplicate comments. An unsuccessful/ambiguous comment
+attempt is handled through the SNS/log alarm rather than blindly reposted.
+These code changes are not active until deployment. No existing task was commented
+on or changed by configuration/testing.
+
 `PYTHONPATH=src python tools/configure_hbl_recovery.py --profile PROFILE` inspects the
 live queue. Applying requires `--apply --alarm-topic SNS_TOPIC_ARN`; it sets at least
 1080 seconds for the inspected 180-second worker, installs an error metric filter,

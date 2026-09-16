@@ -1,3 +1,4 @@
+from mtm_hbl.safe_paths import confined_path, filename_component
 import uvicorn
 from pathlib import Path
 from uuid import uuid4
@@ -303,10 +304,15 @@ def generate_package(
     if not data.shipment.mtm_hbl_no:
         raise HTTPException(status_code=409, detail="HBL number is required for package file naming.")
 
-    output_dir = Path(request.output_dir) if request.output_dir else settings.runs_dir / "hbl_packages"
+    try:
+        output_dir = confined_path(Path(request.output_dir) if request.output_dir else settings.runs_dir / "hbl_packages", settings.runs_dir)
+        filename = filename_component(request.output_filename or f"HBL_Package_{data.shipment.mtm_hbl_no}.pdf")
+        if not filename.lower().endswith(".pdf"):
+            raise ValueError("Package filename must end in .pdf.")
+        output_path = confined_path(output_dir / filename, settings.runs_dir)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     output_dir.mkdir(parents=True, exist_ok=True)
-    filename = request.output_filename or f"HBL_Package_{data.shipment.mtm_hbl_no}.pdf"
-    output_path = output_dir / filename
 
     package_path = generate_bill_of_lading_package(
         data,
@@ -327,10 +333,15 @@ def issue_dev_package(
     if not data.shipment.mtm_hbl_no:
         raise HTTPException(status_code=409, detail="HBL number is required for package file naming.")
 
-    output_dir = Path(request.output_dir) if request.output_dir else settings.runs_dir / "hbl_packages"
+    try:
+        output_dir = confined_path(Path(request.output_dir) if request.output_dir else settings.runs_dir / "hbl_packages", settings.runs_dir)
+        filename = filename_component(request.output_filename or f"HBL_Package_{data.shipment.mtm_hbl_no}.pdf")
+        if not filename.lower().endswith(".pdf"):
+            raise ValueError("Package filename must end in .pdf.")
+        output_path = confined_path(output_dir / filename, settings.runs_dir)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     output_dir.mkdir(parents=True, exist_ok=True)
-    filename = request.output_filename or f"HBL_Package_{data.shipment.mtm_hbl_no}.pdf"
-    output_path = output_dir / filename
 
     verification_base_url = request.verification_base_url or settings.hbl_verification_base_url
     bucket = request.bucket or settings.hbl_verification_bucket
@@ -369,6 +380,7 @@ def issue_dev_package(
             table_name=table,
             region_name=region,
             verification_base_url=verification_base_url,
+            allowed_pdf_root=settings.runs_dir,
         ),
         status=request.status,
         package_id=package_id,
@@ -405,7 +417,7 @@ async def generate_hbl_from_clickup_link(
             settings=settings,
             app_config=AppConfig(settings.config_dir),
             mode=request.mode,
-            output_dir=Path(request.output_dir) if request.output_dir else None,
+            output_dir=confined_path(Path(request.output_dir), settings.runs_dir) if request.output_dir else None,
             logo_path=Path(request.logo_path) if request.logo_path else None,
             attach_to_clickup=request.attach_to_clickup,
             post_comment=request.post_comment,

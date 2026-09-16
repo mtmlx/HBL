@@ -168,7 +168,7 @@ def test_changed_data_between_confirmation_and_render_is_blocked(environment):
     with pytest.raises(ValueError, match='changed after preview'):
         asyncio.run(e.admin._confirm_reissue({}, e.admin.AdminUser('test@example.com')))
     assert len(e.table.scan()['Items']) == 6
-    assert not e.client.events
+    assert not any(x[0] == 'upload' for x in e.client.events)
 
 
 def test_existing_package_object_cannot_be_overwritten(environment):
@@ -181,7 +181,7 @@ def test_existing_package_object_cannot_be_overwritten(environment):
     pdf_before = e.s3.get_object(Bucket='atomic-reissue-test', Key=saved['pdf_s3_key'])['Body'].read()
     data = e.admin._data_from_clickup_task(e.client.task, e.client.values, e.admin.AppConfig(Path('config')))
     with pytest.raises(ClientError) as error:
-        register_issued_package(data, Path(saved['pdf_path']), AwsVerificationConfig('atomic-reissue-test', 'verification'),
+        register_issued_package(data, Path(saved['pdf_path']), AwsVerificationConfig('atomic-reissue-test', 'verification', allowed_pdf_root=Path(saved['pdf_path']).parent),
                                 package_id=saved['package_id'])
     assert error.value.response['Error']['Code'] == 'PreconditionFailed'
     assert e.s3.get_object(Bucket='atomic-reissue-test', Key=saved['pdf_s3_key'])['Body'].read() == pdf_before

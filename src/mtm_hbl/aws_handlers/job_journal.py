@@ -116,3 +116,19 @@ class JobJournal:
     def complete(self, mode):
         self._update("ISSUED" if mode == "issue" else "GENERATED", "COMPLETE",
                      self.item["artifact_json"], self.deadline)
+
+    def claim_failure_comment(self):
+        """At most one attempt per operation; an ambiguous post is reconciled via SNS."""
+        try:
+            self.table.update_item(
+                Key={"job_id": self.job_id},
+                ConditionExpression="#owner = :owner AND attribute_not_exists(failure_comment_claimed)",
+                UpdateExpression="SET failure_comment_claimed = :now",
+                ExpressionAttributeNames={"#owner": "owner"},
+                ExpressionAttributeValues={":owner": self.owner, ":now": int(time.time())},
+            )
+            return True
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                raise
+            return False

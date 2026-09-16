@@ -80,6 +80,7 @@ def test_register_issued_package_uploads_encrypted_private_artifacts(monkeypatch
             table_name="test-table",
             region_name="us-east-1",
             verification_base_url="https://verify.example.com/",
+            allowed_pdf_root=tmp_path,
         ),
         package_id="pkg_test",
         status="issued",
@@ -122,7 +123,7 @@ def test_register_issued_package_can_use_unique_verification_suffix(monkeypatch,
     registration = register_issued_package(
         data,
         pdf_path,
-        AwsVerificationConfig("test-bucket", "test-table", verification_base_url="https://verify.example.com/"),
+        AwsVerificationConfig("test-bucket", "test-table", verification_base_url="https://verify.example.com/", allowed_pdf_root=tmp_path),
         package_id="pkg_test",
         verification_id_suffix="ABCD1234",
     )

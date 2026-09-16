@@ -80,6 +80,7 @@ async def _process_message(payload: dict[str, Any]) -> dict[str, Any]:
     journal = JobJournal(jobs_table, job_id, task_id, mode)
     if journal.done:
         return {"status": "SKIPPED", "reason": "job already completed", "task_id": task_id, "mode": mode}
+    client = None
     try:
         settings = _lambda_settings()
         client = ClickUpClient(settings, _clickup_access_token())
@@ -116,6 +117,8 @@ async def _process_message(payload: dict[str, Any]) -> dict[str, Any]:
     except Exception:
         try:
             journal.fail()
+            if client is not None and journal.claim_failure_comment():
+                await _post_failure_comment(client, task_id, "Recovery required. Check the existing package and job records before any new issuance.", mode=mode)
         except Exception:
             logging.exception("HBL_CHECKPOINT_FAILURE_RECONCILE_BEFORE_RETRY")
         raise
@@ -295,14 +298,14 @@ async def _post_failure_comment(client: ClickUpClient, task_id: str, error: str,
 def _failure_comment_text(mode: str, error: str) -> str:
     if mode == "draft":
         heading = "Draft HBL generation failed."
-        closing = "No draft was issued. Please correct the HBL source fields and trigger draft generation again."
+        closing = "Draft processing may be partially complete. Check the existing attachment before retrying."
     else:
         heading = "Automatic ORIGINAL HBL issuance failed."
         closing = "Issuance may be partially complete. Reconcile the existing package before retrying."
 
     return (
         f"{heading}\n\n"
-        "Missing or invalid required data:\n"
+        "Recovery details:\n"
         f"{_format_error_bullets(error)}\n\n"
         f"{closing}"
     )

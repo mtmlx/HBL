@@ -65,6 +65,7 @@ def main() -> None:
             table_name=args.table,
             region_name=args.region,
             verification_base_url=args.api_base_url,
+            allowed_pdf_root=output_pdf.resolve().parent,
         ),
         status=args.status,
         package_id=package_id,

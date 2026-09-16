@@ -384,8 +384,9 @@ def generate_bill_of_lading_draft(
     return output_path
 
 
-def validate_bill_of_lading_package(path: Path) -> None:
-    reader = PdfReader(str(path))
+def validate_bill_of_lading_package(path: Path | bytes) -> None:
+    from io import BytesIO
+    reader = PdfReader(BytesIO(path) if isinstance(path, bytes) else str(path))
     if len(reader.pages) % len(DOCUMENT_SET) != 0:
         raise ValueError(f"Bill of Lading package page count must be a multiple of 6; got {len(reader.pages)}.")
 
