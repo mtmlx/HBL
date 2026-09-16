@@ -2,7 +2,7 @@ import asyncio
 import importlib
 from concurrent.futures import ThreadPoolExecutor
 from hashlib import sha256
-from threading import Barrier
+from threading import Barrier, Lock
 from unittest.mock import AsyncMock, Mock
 
 import boto3
@@ -55,10 +55,24 @@ def test_only_one_owner_and_stale_owner_cannot_checkpoint(jobs):
 def test_concurrent_failed_job_claim_has_one_winner(jobs):
     acquire(jobs).fail()
     barrier = Barrier(2)
+    api_lock = Lock()
+
+    class AtomicTable:
+        # Moto's in-memory check/update is not atomic across Python threads.
+        # Serialize individual API requests, not the multi-call claim sequence,
+        # to model DynamoDB's per-request atomicity. Real concurrency is also
+        # exercised by tools/test_job_journal_aws.py against disposable AWS data.
+        def __getattr__(self, name):
+            def request(**kwargs):
+                with api_lock:
+                    return getattr(jobs, name)(**kwargs)
+            return request
+
+    atomic_jobs = AtomicTable()
     def claim(_):
         barrier.wait()
         try:
-            acquire(jobs)
+            acquire(atomic_jobs)
             return True
         except JobBusy:
             return False

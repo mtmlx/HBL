@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
 import json
+import os
 from pathlib import Path
 from uuid import uuid4
 
@@ -57,7 +58,14 @@ def register_issued_package(
         raise FileNotFoundError(f"PDF package not found: {pdf_path}")
     if not data.shipment.mtm_hbl_no:
         raise ValueError("HBL number is required to register a verification package.")
-    pdf_bytes = pdf_path.read_bytes()
+    # Keep the authorization guard adjacent to the read as well as at callers.
+    # Re-resolve here so a changed symlink cannot reuse an earlier checked path.
+    read_path = os.path.realpath(pdf_path)
+    allowed_prefix = os.path.realpath(config.allowed_pdf_root).rstrip(os.sep) + os.sep
+    if not read_path.startswith(allowed_prefix):
+        raise ValueError("PDF path is outside the authorized directory.")
+    with open(read_path, "rb") as pdf_file:
+        pdf_bytes = pdf_file.read()
     validate_bill_of_lading_package(pdf_bytes)
 
     package_id = package_id or f"pkg_{uuid4().hex}"
