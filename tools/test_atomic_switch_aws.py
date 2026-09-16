@@ -30,7 +30,7 @@ def main():
         report['cleanup'] = 'pending'
         table.meta.client.get_waiter('table_exists').wait(TableName=name, WaiterConfig={'Delay': 1, 'MaxAttempts': 60})
         old = [SimpleNamespace(verification_id=f'test-old-{i}', package_id='test-pkg-old') for i in range(6)]
-        new = {f'test-new-{i}': 'https://test.invalid' for i in range(6)}
+        new = {f'TEST-NOT-A-SHIPMENT-{kind}{i}-NEW': 'https://test.invalid' for kind in ['O', 'C'] for i in range(1, 4)}
         for r in old:
             table.put_item(Item={'verification_id': r.verification_id, 'package_id': r.package_id,
                                  'hbl_number': 'TEST-NOT-A-SHIPMENT', 'status': 'ISSUED'})

@@ -114,7 +114,7 @@ def test_failure_after_activation_keeps_one_active_package_and_blocks_replay(env
 
 def test_transition_conflict_rolls_back_every_record(environment):
     e = environment
-    new_ids = {f'new-{i}': 'https://test.invalid' for i in range(6)}
+    new_ids = {f'{e.hbl}-{kind}{i}-NEW': 'https://test.invalid' for kind in ['O', 'C'] for i in range(1, 4)}
     for vid in new_ids:
         e.table.put_item(Item={'verification_id': vid, 'status': 'PREPARED', 'package_id': 'pkg_new',
                               'hbl_number': e.hbl, 'pdf_sha256': 'digest'})
@@ -186,3 +186,35 @@ def test_existing_package_object_cannot_be_overwritten(environment):
     assert error.value.response['Error']['Code'] == 'PreconditionFailed'
     assert e.s3.get_object(Bucket='atomic-reissue-test', Key=saved['pdf_s3_key'])['Body'].read() == pdf_before
     assert len(e.table.scan()['Items']) == 12
+
+
+@pytest.mark.parametrize('pages', [2, 3])
+def test_atomic_switch_accepts_complete_continuation_pages(environment, pages):
+    e = environment
+    ids = {f'{e.hbl}-{kind}{n}-P{p}-NEW': 'https://test.invalid'
+           for kind in ['O', 'C'] for n in range(1, 4) for p in range(1, pages + 1)}
+    for vid in ids:
+        e.table.put_item(Item={'verification_id': vid, 'status': 'PREPARED', 'package_id': 'pkg_new',
+                              'hbl_number': e.hbl, 'pdf_sha256': 'digest'})
+    result = SimpleNamespace(verification_urls=ids, hbl_number=e.hbl, package_id='pkg_new', pdf_sha256='digest')
+    activate_replacement(AwsVerificationConfig('unused', 'verification'), e.old, result, reason='test')
+    rows = e.table.scan()['Items']
+    assert sum(r['status'] == 'ISSUED' for r in rows) == 6 * pages
+    assert sum(r['status'] == 'VOID' for r in rows) == 6
+
+
+@pytest.mark.parametrize('corruption', ['missing', 'gap', 'mixed_suffix', 'wrong_sequence'])
+def test_atomic_switch_rejects_incomplete_page_sets_without_changes(environment, corruption):
+    e = environment
+    ids = {f'{e.hbl}-{kind}{n}-P{p}-NEW': 'https://test.invalid'
+           for kind in ['O', 'C'] for n in range(1, 4) for p in [1, 2]}
+    key = f'{e.hbl}-C3-P2-NEW'
+    del ids[key]
+    replacements = {'gap': f'{e.hbl}-C3-P3-NEW', 'mixed_suffix': f'{e.hbl}-C3-P2-OTHER',
+                    'wrong_sequence': f'{e.hbl}-C4-P2-NEW'}
+    if corruption != 'missing': ids[replacements[corruption]] = 'https://test.invalid'
+    result = SimpleNamespace(verification_urls=ids, hbl_number=e.hbl, package_id='pkg_new', pdf_sha256='digest')
+    before = e.table.scan()['Items']
+    with pytest.raises(ValueError):
+        activate_replacement(AwsVerificationConfig('unused', 'verification'), e.old, result, reason='test')
+    assert e.table.scan()['Items'] == before

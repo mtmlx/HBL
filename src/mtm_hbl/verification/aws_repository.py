@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from hashlib import sha256
 import json
 import os
+import re
 from pathlib import Path
 from uuid import uuid4
 
@@ -204,8 +205,27 @@ def activate_replacement(config, old_records, replacement, *, reason):
     resource = boto3.resource("dynamodb", region_name=config.region_name)
     old_ids = {r.verification_id for r in old_records}
     new_ids = set(replacement.verification_urls)
-    if old_ids & new_ids or len(new_ids) != 6 or len(old_ids) + len(new_ids) > 100:
+    if old_ids & new_ids or not new_ids or len(old_ids) + len(new_ids) > 100:
         raise ValueError("Invalid or oversized replacement record set.")
+    # Each of the three originals and three copies must have the same complete
+    # contiguous page set. A continuation page has its own verification record.
+    pattern = re.compile(re.escape(replacement.hbl_number) + r"-([OC][1-3])(?:-P([1-9][0-9]*))?-([A-Za-z0-9]+)")
+    matches = [pattern.fullmatch(vid) for vid in new_ids]
+    if any(match is None for match in matches):
+        raise ValueError("Invalid replacement verification identifier.")
+    suffixes = {match[3] for match in matches}
+    numbered = {match[2] is not None for match in matches}
+    page_numbers = {int(match[2] or 1) for match in matches}
+    if len(suffixes) != 1 or len(numbered) != 1 or max(page_numbers) > len(new_ids):
+        raise ValueError("Inconsistent replacement page set.")
+    expected = {
+        f"{replacement.hbl_number}-{kind}{sequence}"
+        + (f"-P{page}" if True in numbered else "") + f"-{next(iter(suffixes))}"
+        for kind in ("O", "C") for sequence in range(1, 4)
+        for page in range(1, max(page_numbers) + 1)
+    }
+    if new_ids != expected:
+        raise ValueError("Incomplete replacement page set.")
     now = datetime.now(timezone.utc).isoformat()
     writes = []
     for r in old_records:
