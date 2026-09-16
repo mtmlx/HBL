@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import boto3
 
@@ -45,6 +46,12 @@ class FakeTable:
 class FakeDynamoResource:
     def __init__(self, table: FakeTable) -> None:
         self.table = table
+        self.meta = SimpleNamespace(client=self)
+
+    def transact_write_items(self, TransactItems):
+        for write in TransactItems:
+            assert write["Put"]["ConditionExpression"] == "attribute_not_exists(verification_id)"
+            self.table.items.append(write["Put"]["Item"])
 
     def Table(self, _name):
         return self.table
@@ -73,19 +80,20 @@ def test_register_issued_package_uploads_encrypted_private_artifacts(monkeypatch
             table_name="test-table",
             region_name="us-east-1",
             verification_base_url="https://verify.example.com/",
+            allowed_pdf_root=tmp_path,
         ),
         package_id="pkg_test",
         status="issued",
     )
 
-    assert len(fake_s3.uploads) == 1
-    assert fake_s3.uploads[0]["extra_args"]["ServerSideEncryption"] == "AES256"
-    assert fake_s3.uploads[0]["extra_args"]["ContentType"] == "application/pdf"
-    assert len(fake_s3.objects) == 1
-    assert fake_s3.objects[0]["ServerSideEncryption"] == "AES256"
-    assert fake_s3.objects[0]["ContentType"] == "application/json"
+    assert len(fake_s3.objects) == 2
+    assert fake_s3.objects[0]["ContentType"] == "application/pdf"
+    assert all(o["ServerSideEncryption"] == "AES256" and o["IfNoneMatch"] == "*" for o in fake_s3.objects)
     assert len(fake_table.items) == 6
     assert fake_table.items[0]["status"] == "ISSUED"
+    assert fake_table.items[0]["terms_version"] == "3.0"
+    assert fake_table.items[0]["terms_effective_date"] == "2026-06-11"
+    assert fake_table.items[0]["terms_effective_date_display"] == "11-JUN-2026"
     assert fake_table.items[0]["verification_url"] == "https://verify.example.com/verify/WH26040006-O1"
     assert registration.verification_urls["WH26040006-O1"] == (
         "https://verify.example.com/verify/WH26040006-O1"
@@ -115,7 +123,7 @@ def test_register_issued_package_can_use_unique_verification_suffix(monkeypatch,
     registration = register_issued_package(
         data,
         pdf_path,
-        AwsVerificationConfig("test-bucket", "test-table", verification_base_url="https://verify.example.com/"),
+        AwsVerificationConfig("test-bucket", "test-table", verification_base_url="https://verify.example.com/", allowed_pdf_root=tmp_path),
         package_id="pkg_test",
         verification_id_suffix="ABCD1234",
     )

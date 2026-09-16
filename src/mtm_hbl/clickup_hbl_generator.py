@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import json
+from hashlib import sha256
 import re
 from pathlib import Path
-from typing import Literal
+from typing import Callable, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
 from mtm_hbl.clickup_connector.client import ClickUpClient
 from mtm_hbl.config import AppConfig, Settings
+from mtm_hbl.safe_paths import confined_path, filename_component
 from mtm_hbl.models.canonical import CanonicalHblData
 from mtm_hbl.models.clickup import ClickUpTaskData
 from mtm_hbl.pdf.hbl_package import generate_bill_of_lading_draft, generate_bill_of_lading_package
@@ -18,6 +20,12 @@ from mtm_hbl.verification.aws_repository import AwsVerificationConfig, register_
 
 
 GenerationMode = Literal["auto", "draft", "issue"]
+
+
+def canonical_fingerprint(data):
+    values = data.model_dump(mode="json")
+    fields = ("shipment", "parties", "routing", "cargo", "containers", "charges", "carrier_receipt")
+    return sha256(json.dumps({k: values[k] for k in fields}, sort_keys=True).encode()).hexdigest()
 
 
 class ApprovalDecision(BaseModel):
@@ -36,12 +44,14 @@ class ClickUpHblGenerationResult(BaseModel):
     approval: ApprovalDecision = Field(default_factory=ApprovalDecision)
     pdf_path: str
     review_path: str
+    pdf_s3_key: str = ""
     package_id: str = ""
     verification_urls: dict[str, str] = Field(default_factory=dict)
     pdf_sha256: str = ""
     canonical_json_sha256: str = ""
     clickup_attachment_uploaded: bool = False
     clickup_output_field_id: str = ""
+    clickup_status_updated_to: str = ""
     clickup_comment_posted: bool = False
     clickup_comment_assignee_id: str = ""
     warnings: list[str] = Field(default_factory=list)
@@ -77,12 +87,20 @@ async def generate_hbl_from_clickup(
     table: str = "",
     region: str = "",
     issued_by: str = "Andrea Piedad Velasquez Castellon",
+    prevent_original_overwrite: bool = False,
+    checkpoint: Callable[[str, dict], None] | None = None,
+    prepare_only: bool = False,
+    expected_data_hash: str | None = None,
 ) -> ClickUpHblGenerationResult:
     task_id = parse_clickup_task_id(task_ref)
+    filename_component(task_id)
     task = await client.get_task(task_id)
     clickup_values = client.extract_configured_fields(task, app_config)
     data = _data_from_clickup_task(task, clickup_values, app_config)
     _enforce_clickup_hbl_number(data, clickup_values)
+    filename_component(data.shipment.mtm_hbl_no or task_id)
+    if expected_data_hash and canonical_fingerprint(data) != expected_data_hash:
+        raise ValueError("Shipment changed after preview; start a fresh confirmation.")
 
     approval = evaluate_hbl_approval(task, app_config)
     warnings = [issue.message for issue in data.qa.soft_warnings]
@@ -90,9 +108,22 @@ async def generate_hbl_from_clickup(
         warnings.extend(issue.message for issue in data.qa.hard_errors)
 
     generated_mode = _select_generation_mode(mode, approval, data)
-    base_output_dir = output_dir or _default_output_dir(settings.runs_dir, task_id, data)
+    planned_output_field_id = _output_field_id_for_mode(generated_mode, app_config)
+    if (
+        generated_mode == "issue"
+        and attach_to_clickup
+        and prevent_original_overwrite
+        and planned_output_field_id
+        and _attachment_output_field_exists(task, planned_output_field_id)
+    ):
+        raise ValueError(
+            "Cannot issue HBL automatically because the ClickUp original field already "
+            "contains an attachment. Use the controlled reissue/void flow."
+        )
+    base_output_dir = output_dir if output_dir is not None else confined_path(
+        _default_output_dir(settings.runs_dir, task_id, data), settings.runs_dir)
     base_output_dir.mkdir(parents=True, exist_ok=True)
-    review_path = base_output_dir / "approved_review_from_clickup.json"
+    review_path = confined_path(base_output_dir / "approved_review_from_clickup.json", base_output_dir)
     review_path.write_text(data.model_dump_json(indent=2), encoding="utf-8")
 
     registration = None
@@ -104,7 +135,7 @@ async def generate_hbl_from_clickup(
         _require_issuance_config(verification_base_url, bucket, table)
         package_id = f"pkg_{uuid4().hex}"
         verification_id_suffix = _verification_id_suffix(package_id)
-        pdf_path = base_output_dir / f"HBL_Package_{data.shipment.mtm_hbl_no}.pdf"
+        pdf_path = confined_path(base_output_dir / f"HBL_Package_{data.shipment.mtm_hbl_no}.pdf", base_output_dir)
         generate_bill_of_lading_package(
             data,
             pdf_path,
@@ -113,6 +144,8 @@ async def generate_hbl_from_clickup(
             verification_base_url=verification_base_url,
             verification_id_suffix=verification_id_suffix,
         )
+        if checkpoint:
+            checkpoint("REGISTERING", {"package_id": package_id})
         registration = register_issued_package(
             data,
             pdf_path,
@@ -121,55 +154,82 @@ async def generate_hbl_from_clickup(
                 table_name=table,
                 region_name=region,
                 verification_base_url=verification_base_url,
+                allowed_pdf_root=base_output_dir,
             ),
-            status="ISSUED",
+            status="PREPARED" if prepare_only else "ISSUED",
             package_id=package_id,
             verification_id_suffix=verification_id_suffix,
             issued_by=issued_by,
         )
     else:
-        pdf_path = base_output_dir / f"Draft_{data.shipment.mtm_hbl_no or task_id}_v1.pdf"
+        pdf_path = confined_path(base_output_dir / f"Draft_{data.shipment.mtm_hbl_no or task_id}_v1.pdf", base_output_dir)
         generate_bill_of_lading_draft(data, pdf_path, logo_path=logo_path)
 
-    clickup_attachment_uploaded = False
-    clickup_output_field_id = ""
-    clickup_comment_posted = False
-    clickup_comment_assignee_id = ""
-    if attach_to_clickup:
-        clickup_output_field_id = _output_field_id_for_mode(generated_mode, app_config)
-        if clickup_output_field_id:
-            await client.upload_attachment_to_custom_field(task_id, clickup_output_field_id, str(pdf_path))
-            await client.verify_attachment_custom_field(task_id, clickup_output_field_id, pdf_path.name)
-        else:
-            await client.upload_attachment(task_id, str(pdf_path))
-        clickup_attachment_uploaded = True
-    if post_comment:
-        clickup_comment_assignee_id = _comment_assignee_id(task)
-        await client.post_comment(
-            task_id,
-            _comment_text(generated_mode, data, registration),
-            assignee_id=clickup_comment_assignee_id,
-        )
-        clickup_comment_posted = True
-
-    return ClickUpHblGenerationResult(
-        task_id=task_id,
-        hbl_number=data.shipment.mtm_hbl_no,
-        mode_requested=mode,
-        mode_generated=generated_mode,
-        approval=approval,
-        pdf_path=str(pdf_path),
-        review_path=str(review_path),
+    result = ClickUpHblGenerationResult(
+        task_id=task_id, hbl_number=data.shipment.mtm_hbl_no,
+        mode_requested=mode, mode_generated=generated_mode, approval=approval,
+        pdf_path=str(pdf_path), review_path=str(review_path),
+        pdf_s3_key=registration.pdf_s3_key if registration else "",
         package_id=registration.package_id if registration else "",
         verification_urls=registration.verification_urls if registration else {},
         pdf_sha256=registration.pdf_sha256 if registration else "",
         canonical_json_sha256=registration.canonical_json_sha256 if registration else "",
-        clickup_attachment_uploaded=clickup_attachment_uploaded,
-        clickup_output_field_id=clickup_output_field_id,
-        clickup_comment_posted=clickup_comment_posted,
-        clickup_comment_assignee_id=clickup_comment_assignee_id,
+        clickup_output_field_id=planned_output_field_id if attach_to_clickup else "",
+        clickup_comment_assignee_id=_comment_assignee_id(task) if post_comment else "",
         warnings=warnings,
     )
+    artifact = {
+        "result": result.model_dump(), "comment": _comment_text(generated_mode, data, registration),
+        "status": _status_after_original_upload(app_config) if generated_mode == "issue" else "",
+        "attach": attach_to_clickup, "post_comment": post_comment,
+        "bucket": bucket, "region": region,
+        "prevent_original_overwrite": prevent_original_overwrite,
+    }
+    if checkpoint:
+        checkpoint("READY", artifact)
+    if prepare_only:
+        return result
+    return await complete_clickup_artifact(client, artifact, checkpoint=checkpoint)
+
+
+async def complete_clickup_artifact(client, artifact: dict, *, checkpoint=None, phase="READY"):
+    """Resume only after confirmed boundaries; never replay an uncertain mutation."""
+    result = ClickUpHblGenerationResult.model_validate(artifact["result"])
+
+    def save(state):
+        artifact["result"] = result.model_dump()
+        if checkpoint:
+            checkpoint(state, artifact)
+
+    if phase == "READY":
+        if artifact["attach"]:
+            if artifact.get("prevent_original_overwrite") and result.mode_generated == "issue" and result.clickup_output_field_id:
+                task = await client.get_task(result.task_id)
+                if _attachment_output_field_exists(task, result.clickup_output_field_id):
+                    raise ValueError("Original attachment appeared after preparation; reconcile before completion.")
+            save("UPLOADING")
+            if result.clickup_output_field_id:
+                await client.upload_attachment_to_custom_field(result.task_id, result.clickup_output_field_id, result.pdf_path)
+                await client.verify_attachment_custom_field(result.task_id, result.clickup_output_field_id, Path(result.pdf_path).name)
+            else:
+                await client.upload_attachment(result.task_id, result.pdf_path)
+            result.clickup_attachment_uploaded = True
+        save("ATTACHED")
+        phase = "ATTACHED"
+    if phase == "ATTACHED":
+        if artifact["attach"] and result.clickup_output_field_id and artifact["status"]:
+            save("UPDATING_STATUS")
+            await client.update_task_status(result.task_id, artifact["status"])
+            result.clickup_status_updated_to = artifact["status"]
+        save("STATUS_UPDATED")
+        phase = "STATUS_UPDATED"
+    if phase == "STATUS_UPDATED":
+        if artifact["post_comment"]:
+            save("POSTING_COMMENT")
+            await client.post_comment(result.task_id, artifact["comment"], assignee_id=result.clickup_comment_assignee_id)
+            result.clickup_comment_posted = True
+        save("COMPLETE")
+    return result
 
 
 def evaluate_hbl_approval(task: ClickUpTaskData, app_config: AppConfig) -> ApprovalDecision:
@@ -347,6 +407,21 @@ def _output_field_id_for_mode(generated_mode: str, app_config: AppConfig) -> str
     if generated_mode == "issue":
         return str(outputs.get("original_pdf", {}).get("field_id", "")).strip()
     return str(outputs.get("draft_pdf", {}).get("field_id", "")).strip()
+
+
+def _status_after_original_upload(app_config: AppConfig) -> str:
+    outputs = app_config.clickup_fields.get("hbl_outputs", {})
+    return str(
+        outputs.get("original_pdf", {}).get("status_after_upload", "READY FOR ORIGINAL")
+    ).strip()
+
+
+def _attachment_output_field_exists(task: ClickUpTaskData, field_id: str) -> bool:
+    field = task.field_by_id(field_id)
+    value = field.value if field else None
+    if isinstance(value, list):
+        return any(isinstance(item, dict) and item.get("id") for item in value)
+    return bool(value)
 
 
 def _norm(value: object) -> str:

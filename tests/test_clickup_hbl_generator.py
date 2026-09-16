@@ -144,6 +144,7 @@ def test_generate_from_clickup_issues_when_approved(monkeypatch, tmp_path, app_c
     )
 
     class FakeRegistration:
+        pdf_s3_key = "issued/test.pdf"
         package_id = "pkg_test"
         verification_urls = {"WH26040006-O1": "https://verify.example.com/verify/WH26040006-O1"}
         pdf_sha256 = "pdfhash"

@@ -43,6 +43,14 @@ class ClickUpClient:
             response.raise_for_status()
             return response.json()
 
+    async def update_task_status(self, task_id: str, status: str) -> dict[str, Any]:
+        url = f"{self.settings.clickup_api_base_url}/task/{task_id}"
+        payload = {"status": status}
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.put(url, headers=self.headers, json=payload)
+            response.raise_for_status()
+            return response.json()
+
     async def upload_attachment(self, task_id: str, path: str) -> dict[str, Any]:
         url = f"{self.settings.clickup_api_base_url}/task/{task_id}/attachment"
         with open(path, "rb") as handle:
@@ -58,7 +66,10 @@ class ClickUpClient:
         field_id: str,
         path: str,
     ) -> dict[str, Any]:
-        await self._clear_attachment_custom_field(task_id, field_id)
+        task = await self.get_task(task_id)
+        field = task.field_by_id(field_id)
+        old_ids = [str(item["id"]) for item in (field.value if field and isinstance(field.value, list) else [])
+                   if isinstance(item, dict) and item.get("id")]
         workspace_id = await self.get_workspace_id()
         url = f"{self._api_v3_base_url}/workspaces/{workspace_id}/custom_fields/{field_id}/attachments"
         with open(path, "rb") as handle:
@@ -77,7 +88,29 @@ class ClickUpClient:
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.post(url, headers=self.headers, json=payload)
             response.raise_for_status()
+        # Confirm the exact new attachment before removing the prior IDs. Never clear
+        # the entire field: another writer may have added an attachment meanwhile.
+        await self.verify_attachment_id(task_id, field_id, attachment_id)
+        removals = [item for item in old_ids if item != attachment_id]
+        if removals:
+            async with httpx.AsyncClient(timeout=30) as client:
+                response = await client.post(url, headers=self.headers, json={"value": {"rem": removals}})
+                response.raise_for_status()
+        await self.verify_attachment_id(task_id, field_id, attachment_id)
         return attachment
+
+    async def verify_attachment_id(self, task_id: str, field_id: str, attachment_id: str) -> None:
+        for attempt in range(5):
+            task = await self.get_task(task_id)
+            field = task.field_by_id(field_id)
+            value = field.value if field else None
+            if isinstance(value, list) and any(
+                isinstance(item, dict) and str(item.get("id", "")) == attachment_id for item in value
+            ):
+                return
+            if attempt < 4:
+                await asyncio.sleep(1)
+        raise ValueError("Replacement attachment ID was not confirmed; prior attachment retained.")
 
     async def verify_attachment_custom_field(
         self,

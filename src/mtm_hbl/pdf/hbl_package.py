@@ -32,6 +32,7 @@ MARGIN = 10 * MM
 HEADER_HEIGHT = 118
 PARTY_HEIGHT = 195
 SHIPPER_BLOCK_HEIGHT = 55
+TERMS_VALIDATION_HEIGHT = 56
 ROUTING_HEIGHT = 43
 CARGO_TITLE_HEIGHT = 17
 CARGO_TABLE_HEIGHT = 218
@@ -39,6 +40,7 @@ CARGO_HEADER_HEIGHT = 24
 CARGO_TOTAL_HEIGHT = 23
 DESCRIPTION_FONT_SIZE = 7.2
 DESCRIPTION_LINE_GAP = 8.7
+FREIGHT_ROWS_PER_PAGE = 4
 
 FONT = "Helvetica"
 FONT_BOLD = "Helvetica-Bold"
@@ -62,9 +64,19 @@ REQUIRED_TERMS = [
     "Andrea Piedad Velasquez Castellon",
     "For MTM Logix Guatemala Sociedad Anonima",
     "Goods to be delivered to:",
+    "Terms & Conditions / Document Validation",
     "Shipper's load, stow, count and seal. Particulars furnished by shipper.",
     "No. of original B(s)/L:",
 ]
+
+TERMS_VALIDATION_TITLE = "TERMS & CONDITIONS / DOCUMENT VALIDATION"
+TERMS_VALIDATION_TEXT = (
+    "This Multimodal Transport Bill of Lading is issued subject to MTM Logix's Terms "
+    "and Conditions, available through the QR code and validation URL printed on this "
+    "document. Such Terms and Conditions are incorporated into and form part of this "
+    "Bill of Lading. Scan the QR code to verify authenticity, document status, release "
+    "status, and the applicable Terms and Conditions version."
+)
 
 
 @dataclass(frozen=True)
@@ -91,6 +103,12 @@ class CargoPageContent:
     marks_lines: list[str]
 
 
+@dataclass(frozen=True)
+class FreightPageContent:
+    charges: list[ChargeLine]
+    show_total: bool = False
+
+
 DOCUMENT_SET: tuple[DocumentPageConfig, ...] = (
     DocumentPageConfig("ORIGINAL", 1),
     DocumentPageConfig("ORIGINAL", 2),
@@ -102,7 +120,7 @@ DOCUMENT_SET: tuple[DocumentPageConfig, ...] = (
 
 
 def build_document_page_set(data: CanonicalHblData, *, draft: bool = False) -> tuple[DocumentPageConfig, ...]:
-    page_total = len(split_cargo_pages(data))
+    page_total = _document_page_total(data)
     if draft:
         return tuple(DocumentPageConfig("DRAFT", 1, 1, page_number, page_total) for page_number in range(1, page_total + 1))
     pages: list[DocumentPageConfig] = []
@@ -118,6 +136,10 @@ def split_description_pages(data: CanonicalHblData) -> list[list[str]]:
     return [page.description_lines for page in split_cargo_pages(data)]
 
 
+def _document_page_total(data: CanonicalHblData) -> int:
+    return max(len(split_cargo_pages(data)), len(split_freight_pages(data)), 1)
+
+
 def split_cargo_pages(data: CanonicalHblData) -> list[CargoPageContent]:
     description_pages = _split_description_lines(data)
     container_pages = _split_container_pages(data)
@@ -131,6 +153,19 @@ def split_cargo_pages(data: CanonicalHblData) -> list[CargoPageContent]:
                 marks_lines=_first_marks_lines(data) if index == 0 else [],
             )
         )
+    return pages
+
+
+def split_freight_pages(data: CanonicalHblData) -> list[FreightPageContent]:
+    charges = _display_charge_lines_for_data(data)
+    if not charges:
+        return []
+    pages: list[FreightPageContent] = []
+    remaining = list(charges)
+    while remaining:
+        page_charges = remaining[:FREIGHT_ROWS_PER_PAGE]
+        remaining = remaining[FREIGHT_ROWS_PER_PAGE:]
+        pages.append(FreightPageContent(page_charges, show_total=not remaining))
     return pages
 
 
@@ -180,6 +215,24 @@ def _description_lines(data: CanonicalHblData) -> list[str]:
     ]
     lines.extend(line.strip() for line in data.cargo.description_raw.splitlines() if line.strip())
     return lines
+
+
+def _charge_lines_for_data(data: CanonicalHblData) -> list[ChargeLine]:
+    if data.charges.line_items:
+        return data.charges.line_items
+    charge = ChargeLine(
+        description=data.charges.charge_description or "Ocean Basic Freight",
+        rate=data.charges.unit_rate,
+        unit=data.charges.unit,
+        currency=data.charges.currency,
+        prepaid_amount=data.charges.prepaid_amount,
+        collect_amount=data.charges.collect_amount,
+    )
+    return [charge]
+
+
+def _display_charge_lines_for_data(data: CanonicalHblData) -> list[ChargeLine]:
+    return [charge for charge in _charge_lines_for_data(data) if charge.show_on_hbl]
 
 
 def _wrapped_visual_lines(lines: list[str], width: float, font: str, size: float) -> list[str]:
@@ -259,16 +312,27 @@ def generate_bill_of_lading_package(
     )
 
     cargo_pages = split_cargo_pages(data)
+    freight_pages = split_freight_pages(data)
     page_configs = build_document_page_set(data)
+    freight_start_page = page_configs[0].page_total - len(freight_pages) + 1 if freight_pages else 0
     for index, page_config in enumerate(page_configs):
         if index:
             pdf.showPage()
-        cargo_page = cargo_pages[page_config.page_number - 1]
+        cargo_page = (
+            cargo_pages[page_config.page_number - 1]
+            if page_config.page_number <= len(cargo_pages)
+            else CargoPageContent([], [], [])
+        )
+        freight_page = (
+            freight_pages[page_config.page_number - freight_start_page]
+            if freight_pages and page_config.page_number >= freight_start_page
+            else None
+        )
         renderer.render_page(
             page_config,
             cargo_page,
-            show_freight=page_config.page_number == page_config.page_total,
-            show_totals=page_config.page_number == page_config.page_total,
+            freight_page=freight_page,
+            show_totals=page_config.page_number == len(cargo_pages),
         )
 
     pdf.save()
@@ -293,24 +357,36 @@ def generate_bill_of_lading_draft(
         include_verification=False,
     )
     cargo_pages = split_cargo_pages(data)
+    freight_pages = split_freight_pages(data)
     page_configs = build_document_page_set(data, draft=True)
+    freight_start_page = page_configs[0].page_total - len(freight_pages) + 1 if freight_pages else 0
     for index, page_config in enumerate(page_configs):
         if index:
             pdf.showPage()
-        cargo_page = cargo_pages[page_config.page_number - 1]
+        cargo_page = (
+            cargo_pages[page_config.page_number - 1]
+            if page_config.page_number <= len(cargo_pages)
+            else CargoPageContent([], [], [])
+        )
+        freight_page = (
+            freight_pages[page_config.page_number - freight_start_page]
+            if freight_pages and page_config.page_number >= freight_start_page
+            else None
+        )
         renderer.render_page(
             page_config,
             cargo_page,
-            show_freight=page_config.page_number == page_config.page_total,
-            show_totals=page_config.page_number == page_config.page_total,
+            freight_page=freight_page,
+            show_totals=page_config.page_number == len(cargo_pages),
         )
     pdf.save()
     validate_bill_of_lading_draft(output_path)
     return output_path
 
 
-def validate_bill_of_lading_package(path: Path) -> None:
-    reader = PdfReader(str(path))
+def validate_bill_of_lading_package(path: Path | bytes) -> None:
+    from io import BytesIO
+    reader = PdfReader(BytesIO(path) if isinstance(path, bytes) else str(path))
     if len(reader.pages) % len(DOCUMENT_SET) != 0:
         raise ValueError(f"Bill of Lading package page count must be a multiple of 6; got {len(reader.pages)}.")
 
@@ -420,7 +496,7 @@ class BillOfLadingPackageRenderer:
         page_config: DocumentPageConfig,
         cargo_page: CargoPageContent,
         *,
-        show_freight: bool = True,
+        freight_page: FreightPageContent | None = None,
         show_totals: bool = True,
     ) -> None:
         self._draw_watermark(page_config.type)
@@ -431,8 +507,8 @@ class BillOfLadingPackageRenderer:
         y = self._draw_party_section(y)
         y = self._draw_routing_section(y)
         y = self._draw_cargo_particulars(y, cargo_page, show_totals=show_totals)
-        if show_freight:
-            y = self._draw_freight_table(y)
+        if freight_page:
+            y = self._draw_freight_table(y, freight_page)
         self._draw_footer(y, page_config)
 
     def _draw_watermark(self, text: str) -> None:
@@ -569,15 +645,36 @@ class BillOfLadingPackageRenderer:
             self.data.parties.delivery_apply_to.raw_text
             or self.data.parties.consignee.raw_text
         )
+        right_w = self.width * 0.50
+        terms_h = TERMS_VALIDATION_HEIGHT
+        delivery_h = height - terms_h
+        terms_top = y_bottom + terms_h
+        self._hline(x_mid, terms_top, right_w, 0.45)
         self._draw_labeled_block(
             x_mid,
-            y_bottom,
-            self.width * 0.50,
-            height,
+            terms_top,
+            right_w,
+            delivery_h,
             "GOODS TO BE DELIVERED TO:",
             delivery,
         )
+        self._draw_terms_validation_block(x_mid, y_bottom, right_w, terms_h)
         return y_bottom
+
+    def _draw_terms_validation_block(self, x: float, y: float, w: float, h: float) -> None:
+        pad = 5
+        body_size = 5.0
+        self._text(x + pad, y + h - 10, TERMS_VALIDATION_TITLE, FONT_BOLD, 6.0)
+        self._wrapped_lines(
+            x + pad,
+            y + h - 20,
+            self._wrap(TERMS_VALIDATION_TEXT, w - (2 * pad), FONT, body_size),
+            w - (2 * pad),
+            body_size,
+            font=FONT,
+            line_gap=6.0,
+            max_lines=6,
+        )
 
     def _draw_routing_section(self, y_top: float) -> float:
         height = 43
@@ -770,7 +867,7 @@ class BillOfLadingPackageRenderer:
             align="right",
         )
 
-    def _draw_freight_table(self, y_top: float) -> float:
+    def _draw_freight_table(self, y_top: float, freight_page: FreightPageContent) -> float:
         height = 70
         y_bottom = y_top - height
         self._section_box(self.left, y_bottom, self.width, height)
@@ -793,10 +890,9 @@ class BillOfLadingPackageRenderer:
         for index, header in enumerate(headers):
             self._text(xs[index] + widths[index] / 2, y_top - 12, header, FONT_BOLD, 6.8, align="center")
 
-        charges = self._charge_lines()
-        row_h = 13
-        row_y = y_top - header_h - 11
-        for index, charge in enumerate(charges[:3]):
+        row_h = 9.8
+        row_y = y_top - header_h - 8.3
+        for index, charge in enumerate(freight_page.charges[:FREIGHT_ROWS_PER_PAGE]):
             self._validate_charge_payment(charge)
             prepaid = charge.prepaid_amount if self._has_nonzero_amount(charge.prepaid_amount) else ""
             collect = charge.collect_amount if self._has_nonzero_amount(charge.collect_amount) else ""
@@ -811,7 +907,16 @@ class BillOfLadingPackageRenderer:
             for col, value in enumerate(values):
                 align = "right" if col in {1, 4, 5} else "center" if col == 3 else "left"
                 x = xs[col] + (widths[col] - 4 if align == "right" else widths[col] / 2 if align == "center" else 4)
-                self._text(x, row_y - index * row_h, value, FONT, 7.0, align=align)
+                self._text(x, row_y - index * row_h, value, FONT, 6.1, align=align)
+        if freight_page.show_total:
+            total_y = row_y - (len(freight_page.charges[:FREIGHT_ROWS_PER_PAGE]) * row_h)
+            self._hline(self.left, total_y + 5.2, self.width, 0.45)
+            prepaid_total, collect_total = self._freight_totals()
+            self._text(xs[0] + 4, total_y, "TOTAL FREIGHT", FONT_BOLD, 6.3)
+            if prepaid_total:
+                self._text(xs[4] + widths[4] - 4, total_y, self._format_decimal_money(prepaid_total), FONT_BOLD, 6.3, align="right")
+            if collect_total:
+                self._text(xs[5] + widths[5] - 4, total_y, self._format_decimal_money(collect_total), FONT_BOLD, 6.3, align="right")
         return y_bottom
 
     def _draw_footer(self, y_top: float, page_config: DocumentPageConfig) -> None:
@@ -1231,17 +1336,20 @@ class BillOfLadingPackageRenderer:
         return [line.strip() for line in marks.splitlines() if line.strip()] if marks else ["N/M"]
 
     def _charge_lines(self) -> list[ChargeLine]:
-        if self.data.charges.line_items:
-            return self.data.charges.line_items
-        charge = ChargeLine(
-            description=self.data.charges.charge_description or "Ocean Basic Freight",
-            rate=self.data.charges.unit_rate,
-            unit=self.data.charges.unit,
-            currency=self.data.charges.currency,
-            prepaid_amount=self.data.charges.prepaid_amount,
-            collect_amount=self.data.charges.collect_amount,
-        )
-        return [charge]
+        return _charge_lines_for_data(self.data)
+
+    def _display_charge_lines(self) -> list[ChargeLine]:
+        return _display_charge_lines_for_data(self.data)
+
+    def _freight_totals(self) -> tuple[Decimal, Decimal]:
+        prepaid_total = Decimal("0")
+        collect_total = Decimal("0")
+        for charge in self._display_charge_lines():
+            if not charge.include_in_total:
+                continue
+            prepaid_total += self._amount_decimal(charge.prepaid_amount)
+            collect_total += self._amount_decimal(charge.collect_amount)
+        return prepaid_total, collect_total
 
     @staticmethod
     def _validate_charge_payment(charge: ChargeLine) -> None:
@@ -1259,6 +1367,15 @@ class BillOfLadingPackageRenderer:
             return Decimal(str(value).replace(",", "").strip()) != 0
         except InvalidOperation:
             return bool(str(value).strip())
+
+    @staticmethod
+    def _amount_decimal(value: str) -> Decimal:
+        if not value:
+            return Decimal("0")
+        try:
+            return Decimal(str(value).replace(",", "").strip())
+        except InvalidOperation:
+            return Decimal("0")
 
     def _forwarder_receipt_text(self) -> str:
         count = str(len(self.data.containers) or self.data.carrier_receipt.container_count_numeric or "").strip()
@@ -1287,9 +1404,13 @@ class BillOfLadingPackageRenderer:
         if not value:
             return ""
         try:
-            return f"{Decimal(str(value).replace(',', '').strip()):,.2f}"
+            return BillOfLadingPackageRenderer._format_decimal_money(Decimal(str(value).replace(',', '').strip()))
         except InvalidOperation:
             return value
+
+    @staticmethod
+    def _format_decimal_money(value: Decimal) -> str:
+        return f"{value:,.2f}"
 
     @staticmethod
     def _format_amount_with_unit(value: str, unit: str, decimals: int) -> str:

@@ -4,18 +4,25 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
 import json
+import os
+import re
 from pathlib import Path
 from uuid import uuid4
 
 import boto3
 
 from mtm_hbl.models.canonical import CanonicalHblData
+from mtm_hbl.safe_paths import confined_path
 from mtm_hbl.pdf.hbl_package import (
     build_document_page_set,
     validate_bill_of_lading_package,
     verification_id_for_page,
     verification_url_for_page,
 )
+
+TERMS_VERSION = "3.0"
+TERMS_EFFECTIVE_DATE = "2026-06-11"
+TERMS_EFFECTIVE_DATE_DISPLAY = "11-JUN-2026"
 
 
 @dataclass(frozen=True)
@@ -24,6 +31,7 @@ class AwsVerificationConfig:
     table_name: str
     region_name: str = "us-east-1"
     verification_base_url: str = ""
+    allowed_pdf_root: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -46,11 +54,20 @@ def register_issued_package(
     verification_id_suffix: str = "",
     issued_by: str = "Andrea Piedad Velasquez Castellon",
 ) -> IssuedPackageRegistration:
+    pdf_path = confined_path(pdf_path, config.allowed_pdf_root)
     if not pdf_path.exists():
         raise FileNotFoundError(f"PDF package not found: {pdf_path}")
     if not data.shipment.mtm_hbl_no:
         raise ValueError("HBL number is required to register a verification package.")
-    validate_bill_of_lading_package(pdf_path)
+    # Keep the authorization guard adjacent to the read as well as at callers.
+    # Re-resolve here so a changed symlink cannot reuse an earlier checked path.
+    read_path = os.path.realpath(pdf_path)
+    allowed_prefix = os.path.realpath(config.allowed_pdf_root).rstrip(os.sep) + os.sep
+    if not read_path.startswith(allowed_prefix):
+        raise ValueError("PDF path is outside the authorized directory.")
+    with open(read_path, "rb") as pdf_file:
+        pdf_bytes = pdf_file.read()
+    validate_bill_of_lading_package(pdf_bytes)
 
     package_id = package_id or f"pkg_{uuid4().hex}"
     issued_at = datetime.now(timezone.utc).isoformat()
@@ -62,31 +79,27 @@ def register_issued_package(
     canonical_json = json.dumps(data.model_dump(mode="json"), ensure_ascii=False, indent=2).encode(
         "utf-8"
     )
-    pdf_digest = sha256(pdf_path.read_bytes()).hexdigest()
+    pdf_digest = sha256(pdf_bytes).hexdigest()
     canonical_digest = sha256(canonical_json).hexdigest()
 
     s3 = boto3.client("s3", region_name=config.region_name)
     dynamodb = boto3.resource("dynamodb", region_name=config.region_name)
     table = dynamodb.Table(config.table_name)
 
-    s3.upload_file(
-        str(pdf_path),
-        config.bucket_name,
-        pdf_s3_key,
-        ExtraArgs={
-            "ServerSideEncryption": "AES256",
-            "ContentType": "application/pdf",
-            "Metadata": {
+    s3.put_object(
+        Bucket=config.bucket_name, Key=pdf_s3_key, Body=pdf_bytes,
+        IfNoneMatch="*", ServerSideEncryption="AES256", ContentType="application/pdf",
+        Metadata={
                 "hbl-number": data.shipment.mtm_hbl_no,
                 "package-id": package_id,
                 "sha256": pdf_digest,
-            },
         },
     )
     s3.put_object(
         Bucket=config.bucket_name,
         Key=canonical_json_s3_key,
         Body=canonical_json,
+        IfNoneMatch="*",
         ServerSideEncryption="AES256",
         ContentType="application/json",
         Metadata={
@@ -98,6 +111,7 @@ def register_issued_package(
 
     verification_urls: dict[str, str] = {}
     normalized_status = status.upper()
+    writes = []
     for page_config in build_document_page_set(data):
         verification_id = verification_id_for_page(data, page_config, suffix=verification_id_suffix)
         verification_url = verification_url_for_page(
@@ -107,8 +121,9 @@ def register_issued_package(
             suffix=verification_id_suffix,
         )
         verification_urls[verification_id] = verification_url
-        table.put_item(
-            Item={
+        writes.append({"Put": {"TableName": config.table_name,
+            "ConditionExpression": "attribute_not_exists(verification_id)",
+            "Item": {
                 "verification_id": verification_id,
                 "verification_url": verification_url,
                 "package_id": package_id,
@@ -127,11 +142,17 @@ def register_issued_package(
                 "canonical_json_sha256": canonical_digest,
                 "issued_at": issued_at,
                 "issued_by": issued_by,
+                "terms_version": TERMS_VERSION,
+                "terms_effective_date": TERMS_EFFECTIVE_DATE,
+                "terms_effective_date_display": TERMS_EFFECTIVE_DATE_DISPLAY,
                 "clickup_task_id": data.shipment.clickup_task_id,
                 "voided_at": "",
                 "superseded_by": "",
             }
-        )
+        }})
+    if not 1 <= len(writes) <= 100:
+        raise ValueError("Package exceeds atomic registration limit.")
+    dynamodb.meta.client.transact_write_items(TransactItems=writes)
 
     return IssuedPackageRegistration(
         package_id=package_id,
@@ -175,3 +196,54 @@ def _issue_year(data: CanonicalHblData) -> str:
         if token.isdigit() and len(token) == 4:
             return token
     return ""
+
+
+def activate_replacement(config, old_records, replacement, *, reason):
+    """All prior records become VOID in the same transaction that activates the new set."""
+    if not old_records or not reason.strip():
+        raise ValueError("Replacement requires prior records and a reason.")
+    resource = boto3.resource("dynamodb", region_name=config.region_name)
+    old_ids = {r.verification_id for r in old_records}
+    new_ids = set(replacement.verification_urls)
+    if old_ids & new_ids or not new_ids or len(old_ids) + len(new_ids) > 100:
+        raise ValueError("Invalid or oversized replacement record set.")
+    # Each of the three originals and three copies must have the same complete
+    # contiguous page set. A continuation page has its own verification record.
+    pattern = re.compile(re.escape(replacement.hbl_number) + r"-([OC][1-3])(?:-P([1-9][0-9]*))?-([A-Za-z0-9]+)")
+    matches = [pattern.fullmatch(vid) for vid in new_ids]
+    if any(match is None for match in matches):
+        raise ValueError("Invalid replacement verification identifier.")
+    suffixes = {match[3] for match in matches}
+    numbered = {match[2] is not None for match in matches}
+    page_numbers = {int(match[2] or 1) for match in matches}
+    if len(suffixes) != 1 or len(numbered) != 1 or max(page_numbers) > len(new_ids):
+        raise ValueError("Inconsistent replacement page set.")
+    expected = {
+        f"{replacement.hbl_number}-{kind}{sequence}"
+        + (f"-P{page}" if True in numbered else "") + f"-{next(iter(suffixes))}"
+        for kind in ("O", "C") for sequence in range(1, 4)
+        for page in range(1, max(page_numbers) + 1)
+    }
+    if new_ids != expected:
+        raise ValueError("Incomplete replacement page set.")
+    now = datetime.now(timezone.utc).isoformat()
+    writes = []
+    for r in old_records:
+        writes.append({"Update": {
+            "TableName": config.table_name, "Key": {"verification_id": r.verification_id},
+            "ConditionExpression": "#s = :issued AND package_id = :old AND hbl_number = :hbl",
+            "UpdateExpression": "SET #s = :void, superseded_by = :new, voided_at = :now, void_reason = :reason",
+            "ExpressionAttributeNames": {"#s": "status"},
+            "ExpressionAttributeValues": {":issued": "ISSUED", ":old": r.package_id, ":hbl": replacement.hbl_number,
+                ":void": "VOID", ":new": replacement.package_id, ":now": now, ":reason": reason},
+        }})
+    for vid in new_ids:
+        writes.append({"Update": {
+            "TableName": config.table_name, "Key": {"verification_id": vid},
+            "ConditionExpression": "#s = :prepared AND package_id = :new AND pdf_sha256 = :hash AND hbl_number = :hbl",
+            "UpdateExpression": "SET #s = :issued",
+            "ExpressionAttributeNames": {"#s": "status"},
+            "ExpressionAttributeValues": {":prepared": "PREPARED", ":new": replacement.package_id,
+                ":hash": replacement.pdf_sha256, ":hbl": replacement.hbl_number, ":issued": "ISSUED"},
+        }})
+    resource.meta.client.transact_write_items(TransactItems=writes)

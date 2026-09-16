@@ -1,6 +1,11 @@
-# MTM Guatemala HBL Draft Generator
+# MTM Guatemala HBL Generator and AWS Runtime
 
-Phase 1 local API for controlled MTM Guatemala House Bill of Lading draft generation.
+Controlled Guatemala HBL draft/original generation, ClickUp completion, and AWS
+verification. Application source and configuration have been synchronized from the
+deployed AWS issuer and verification services. See
+[AWS source baseline and operational routine](docs/aws-source-sync.md) for exact
+deployment hashes, supported entry points, and the distinction between normal
+issuance and manager-controlled reissuance.
 
 The service runs locally by default:
 
@@ -28,13 +33,14 @@ HBL_VERIFICATION_BUCKET=
 HBL_VERIFICATION_TABLE=mtm-hbl-verification-dev
 ```
 
-Phase 1 constraints:
+Scope:
 
-- Guatemala only.
-- Draft generation only.
-- No final/original HBL generation.
-- No automatic signatures, stamps, customer emails, or MBL redaction.
-- No draft upload to the ClickUp final PDF custom field.
+- Guatemala HBL generation, including drafts and original/copy packages.
+- Drafts are kept separate from the ClickUp HBL Original field.
+- The AWS normal-issuance worker protects an existing original attachment and
+  requires the configured issuance approval checks.
+- Signatures and live credentials are runtime assets, excluded from GitHub.
+- No customer email or customs-manifest submission is performed by this routine.
 
 ## Dev Verification Package Test
 

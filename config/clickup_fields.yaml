@@ -11,6 +11,9 @@ final_pdf:
   use_only_after_final_approval: true
 
 hbl_outputs:
+  draft_trigger:
+    field_id: "e51205ba-ea9d-4755-a3fe-1648770b6671"
+    field_name: "HBL Draft Trigger"
   draft_pdf:
     field_id: "85b0aff3-ccc5-4f90-b625-ed55592e07b7"
     field_name: "HBL Draft"
@@ -18,6 +21,7 @@ hbl_outputs:
     field_id: "b7c70ef7-1c86-4c11-8022-a5c4913216ed"
     field_name: "HBL Original"
     use_only_after_final_approval: true
+    status_after_upload: "READY FOR ORIGINAL"
 
 approval:
   field_names:
