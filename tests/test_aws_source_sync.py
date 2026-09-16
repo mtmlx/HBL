@@ -70,6 +70,7 @@ def run_issue(client, tmp_path, app_config):
 
 def registration_stub(monkeypatch):
     register = Mock(return_value=SimpleNamespace(
+        pdf_s3_key='issued/test.pdf',
         package_id='pkg_test', pdf_sha256='pdfhash', canonical_json_sha256='jsonhash',
         verification_urls={'WH26040006-O1': 'https://verify.example.com/verify/WH26040006-O1'},
     ))

@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from hashlib import sha256
 import json
 import os
+import logging
 from pathlib import Path
 import re
 from typing import Any
@@ -13,7 +14,8 @@ import boto3
 from botocore.exceptions import ClientError
 
 from mtm_hbl.clickup_connector.client import ClickUpClient
-from mtm_hbl.clickup_hbl_generator import generate_hbl_from_clickup, parse_clickup_task_id
+from mtm_hbl.clickup_hbl_generator import generate_hbl_from_clickup, parse_clickup_task_id, complete_clickup_artifact
+from mtm_hbl.aws_handlers.job_journal import JobJournal
 from mtm_hbl.config import AppConfig, Settings
 
 
@@ -55,9 +57,14 @@ def worker_handler(event: dict[str, Any], context: object) -> dict[str, Any]:
     for record in event.get("Records", []):
         try:
             payload = json.loads(record.get("body") or "{}")
+            if not payload.get("request_id") and record.get("messageId"):
+                payload["request_id"] = record["messageId"]
             result = asyncio.run(_process_message(payload))
-        except Exception as exc:  # Keep the queue from retrying permanent document-control failures.
-            result = {"status": "FAILED", "error": str(exc)}
+        except Exception:
+            # Raising works even when ReportBatchItemFailures is not configured.
+            # Stop here for FIFO ordering. Completed jobs are skipped on redelivery.
+            logging.exception("HBL_QUEUE_RETRY_OR_RECONCILIATION_REQUIRED")
+            raise
         results.append(result)
     return {"results": results}
 
@@ -70,50 +77,50 @@ async def _process_message(payload: dict[str, Any]) -> dict[str, Any]:
     job_id = _job_id(mode, task_id, payload)
     jobs_table = _jobs_table()
 
-    started = _start_job(jobs_table, job_id, task_id, payload, mode)
-    if not started:
-        return {
-            "status": "SKIPPED",
-            "reason": "job already running or issued",
-            "task_id": task_id,
-            "mode": mode,
-        }
-
-    settings = _lambda_settings()
-    token = _clickup_access_token()
-    client = ClickUpClient(settings, token)
-
+    journal = JobJournal(jobs_table, job_id, task_id, mode)
+    if journal.done:
+        return {"status": "SKIPPED", "reason": "job already completed", "task_id": task_id, "mode": mode}
     try:
-        result = await generate_hbl_from_clickup(
-            task_ref=task_id,
-            client=client,
-            settings=settings,
-            app_config=AppConfig(settings.config_dir),
-            mode="draft" if mode == "draft" else "issue",
-            output_dir=Path("/tmp") / "hbl_runs" / mode / task_id / job_id.replace("#", "_"),
-            logo_path=Path(os.getenv("HBL_LOGO_PATH", "assets/mtm_logix_logo.png")),
-            attach_to_clickup=True,
-            post_comment=True,
-            verification_base_url=settings.hbl_verification_base_url,
-            bucket=settings.hbl_verification_bucket,
-            table=settings.hbl_verification_table,
-            region=settings.aws_region,
-            issued_by=os.getenv("HBL_ISSUED_BY", "Andrea Piedad Velasquez Castellon"),
-            prevent_original_overwrite=True,
-        )
-    except Exception as exc:
-        _mark_job_failed(jobs_table, job_id, exc)
-        await _post_failure_comment(client, task_id, str(exc), mode=mode)
-        return {"status": "FAILED", "task_id": task_id, "mode": mode, "error": str(exc)}
-
-    _mark_job_completed(jobs_table, job_id, result.model_dump(), mode)
-    return {
-        "status": "GENERATED" if mode == "draft" else "ISSUED",
-        "task_id": task_id,
-        "mode": mode,
-        "hbl_number": result.hbl_number,
-        "package_id": result.package_id,
-    }
+        settings = _lambda_settings()
+        client = ClickUpClient(settings, _clickup_access_token())
+        if journal.phase != "START":
+            artifact = journal.artifact
+            if journal.phase == "READY":
+                result_data = artifact["result"]
+                key = result_data.get("pdf_s3_key")
+                if not key:
+                    journal.save("DRAFT_ARTIFACT_MISSING", artifact)
+                    raise RuntimeError("Draft recovery requires reconciliation of the generated artifact.")
+                pdf = Path("/tmp") / "hbl_recovery" / job_id.replace("#", "_") / Path(key).name
+                pdf.parent.mkdir(parents=True, exist_ok=True)
+                boto3.client("s3", region_name=artifact["region"]).download_file(artifact["bucket"], key, str(pdf))
+                if sha256(pdf.read_bytes()).hexdigest() != result_data["pdf_sha256"]:
+                    raise RuntimeError("Recovery PDF hash mismatch; refusing attachment.")
+                result_data["pdf_path"] = str(pdf)
+            result = await complete_clickup_artifact(client, artifact, checkpoint=journal.save, phase=journal.phase)
+        else:
+            result = await generate_hbl_from_clickup(
+                task_ref=task_id, client=client, settings=settings,
+                app_config=AppConfig(settings.config_dir),
+                mode="draft" if mode == "draft" else "issue",
+                output_dir=Path("/tmp") / "hbl_runs" / mode / task_id / job_id.replace("#", "_"),
+                logo_path=Path(os.getenv("HBL_LOGO_PATH", "assets/mtm_logix_logo.png")),
+                attach_to_clickup=True, post_comment=True,
+                verification_base_url=settings.hbl_verification_base_url,
+                bucket=settings.hbl_verification_bucket, table=settings.hbl_verification_table,
+                region=settings.aws_region,
+                issued_by=os.getenv("HBL_ISSUED_BY", "Andrea Piedad Velasquez Castellon"),
+                prevent_original_overwrite=True, checkpoint=journal.save,
+            )
+        journal.complete(mode)
+    except Exception:
+        try:
+            journal.fail()
+        except Exception:
+            logging.exception("HBL_CHECKPOINT_FAILURE_RECONCILE_BEFORE_RETRY")
+        raise
+    return {"status": "GENERATED" if mode == "draft" else "ISSUED", "task_id": task_id,
+            "mode": mode, "hbl_number": result.hbl_number, "package_id": result.package_id}
 
 
 def _webhook_secret_matches(event: dict[str, Any]) -> bool:
@@ -272,72 +279,6 @@ def _job_id(mode: str, task_id: str, payload: dict[str, Any]) -> str:
     return f"original#{task_id}"
 
 
-def _start_job(table, job_id: str, task_id: str, payload: dict[str, Any], mode: str) -> bool:
-    now = _now()
-    item = {
-        "job_id": job_id,
-        "task_id": task_id,
-        "mode": mode,
-        "status": "RUNNING",
-        "created_at": now,
-        "updated_at": now,
-        "payload_sha256": sha256(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest(),
-        "attempts": 1,
-    }
-    try:
-        table.put_item(Item=item, ConditionExpression="attribute_not_exists(job_id)")
-        return True
-    except ClientError as exc:
-        if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
-            raise
-    if mode == "draft":
-        return False
-    existing = table.get_item(Key={"job_id": job_id}).get("Item", {})
-    if existing.get("status") in {"RUNNING", "ISSUED"}:
-        return False
-    table.update_item(
-        Key={"job_id": job_id},
-        UpdateExpression="SET #s = :running, updated_at = :now ADD attempts :one",
-        ExpressionAttributeNames={"#s": "status"},
-        ExpressionAttributeValues={":running": "RUNNING", ":now": now, ":one": 1},
-    )
-    return True
-
-
-def _mark_job_completed(table, job_id: str, result: dict[str, Any], mode: str) -> None:
-    status = "GENERATED" if mode == "draft" else "ISSUED"
-    table.update_item(
-        Key={"job_id": job_id},
-        UpdateExpression=(
-            "SET #s = :issued, updated_at = :now, hbl_number = :hbl, "
-            "package_id = :package_id, pdf_sha256 = :pdf_sha256, result_json = :result, #m = :mode"
-        ),
-        ExpressionAttributeNames={"#s": "status", "#m": "mode"},
-        ExpressionAttributeValues={
-            ":issued": status,
-            ":now": _now(),
-            ":hbl": result.get("hbl_number", ""),
-            ":package_id": result.get("package_id", ""),
-            ":pdf_sha256": result.get("pdf_sha256", ""),
-            ":result": json.dumps(result, ensure_ascii=False),
-            ":mode": mode,
-        },
-    )
-
-
-def _mark_job_failed(table, job_id: str, exc: Exception) -> None:
-    table.update_item(
-        Key={"job_id": job_id},
-        UpdateExpression="SET #s = :failed, updated_at = :now, error_message = :error",
-        ExpressionAttributeNames={"#s": "status"},
-        ExpressionAttributeValues={
-            ":failed": "FAILED",
-            ":now": _now(),
-            ":error": str(exc)[:1500],
-        },
-    )
-
-
 async def _post_failure_comment(client: ClickUpClient, task_id: str, error: str, *, mode: str) -> None:
     try:
         task = await client.get_task(task_id)
@@ -357,7 +298,7 @@ def _failure_comment_text(mode: str, error: str) -> str:
         closing = "No draft was issued. Please correct the HBL source fields and trigger draft generation again."
     else:
         heading = "Automatic ORIGINAL HBL issuance failed."
-        closing = "No original was issued by the AWS automation."
+        closing = "Issuance may be partially complete. Reconcile the existing package before retrying."
 
     return (
         f"{heading}\n\n"
