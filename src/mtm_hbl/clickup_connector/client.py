@@ -43,6 +43,14 @@ class ClickUpClient:
             response.raise_for_status()
             return response.json()
 
+    async def update_task_status(self, task_id: str, status: str) -> dict[str, Any]:
+        url = f"{self.settings.clickup_api_base_url}/task/{task_id}"
+        payload = {"status": status}
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.put(url, headers=self.headers, json=payload)
+            response.raise_for_status()
+            return response.json()
+
     async def upload_attachment(self, task_id: str, path: str) -> dict[str, Any]:
         url = f"{self.settings.clickup_api_base_url}/task/{task_id}/attachment"
         with open(path, "rb") as handle:

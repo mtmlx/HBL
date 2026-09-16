@@ -42,6 +42,7 @@ class ClickUpHblGenerationResult(BaseModel):
     canonical_json_sha256: str = ""
     clickup_attachment_uploaded: bool = False
     clickup_output_field_id: str = ""
+    clickup_status_updated_to: str = ""
     clickup_comment_posted: bool = False
     clickup_comment_assignee_id: str = ""
     warnings: list[str] = Field(default_factory=list)
@@ -77,6 +78,7 @@ async def generate_hbl_from_clickup(
     table: str = "",
     region: str = "",
     issued_by: str = "Andrea Piedad Velasquez Castellon",
+    prevent_original_overwrite: bool = False,
 ) -> ClickUpHblGenerationResult:
     task_id = parse_clickup_task_id(task_ref)
     task = await client.get_task(task_id)
@@ -90,6 +92,18 @@ async def generate_hbl_from_clickup(
         warnings.extend(issue.message for issue in data.qa.hard_errors)
 
     generated_mode = _select_generation_mode(mode, approval, data)
+    planned_output_field_id = _output_field_id_for_mode(generated_mode, app_config)
+    if (
+        generated_mode == "issue"
+        and attach_to_clickup
+        and prevent_original_overwrite
+        and planned_output_field_id
+        and _attachment_output_field_exists(task, planned_output_field_id)
+    ):
+        raise ValueError(
+            "Cannot issue HBL automatically because the ClickUp original field already "
+            "contains an attachment. Use the controlled reissue/void flow."
+        )
     base_output_dir = output_dir or _default_output_dir(settings.runs_dir, task_id, data)
     base_output_dir.mkdir(parents=True, exist_ok=True)
     review_path = base_output_dir / "approved_review_from_clickup.json"
@@ -133,13 +147,18 @@ async def generate_hbl_from_clickup(
 
     clickup_attachment_uploaded = False
     clickup_output_field_id = ""
+    clickup_status_updated_to = ""
     clickup_comment_posted = False
     clickup_comment_assignee_id = ""
     if attach_to_clickup:
-        clickup_output_field_id = _output_field_id_for_mode(generated_mode, app_config)
+        clickup_output_field_id = planned_output_field_id
         if clickup_output_field_id:
             await client.upload_attachment_to_custom_field(task_id, clickup_output_field_id, str(pdf_path))
             await client.verify_attachment_custom_field(task_id, clickup_output_field_id, pdf_path.name)
+            if generated_mode == "issue":
+                clickup_status_updated_to = _status_after_original_upload(app_config)
+                if clickup_status_updated_to:
+                    await client.update_task_status(task_id, clickup_status_updated_to)
         else:
             await client.upload_attachment(task_id, str(pdf_path))
         clickup_attachment_uploaded = True
@@ -166,6 +185,7 @@ async def generate_hbl_from_clickup(
         canonical_json_sha256=registration.canonical_json_sha256 if registration else "",
         clickup_attachment_uploaded=clickup_attachment_uploaded,
         clickup_output_field_id=clickup_output_field_id,
+        clickup_status_updated_to=clickup_status_updated_to,
         clickup_comment_posted=clickup_comment_posted,
         clickup_comment_assignee_id=clickup_comment_assignee_id,
         warnings=warnings,
@@ -347,6 +367,21 @@ def _output_field_id_for_mode(generated_mode: str, app_config: AppConfig) -> str
     if generated_mode == "issue":
         return str(outputs.get("original_pdf", {}).get("field_id", "")).strip()
     return str(outputs.get("draft_pdf", {}).get("field_id", "")).strip()
+
+
+def _status_after_original_upload(app_config: AppConfig) -> str:
+    outputs = app_config.clickup_fields.get("hbl_outputs", {})
+    return str(
+        outputs.get("original_pdf", {}).get("status_after_upload", "READY FOR ORIGINAL")
+    ).strip()
+
+
+def _attachment_output_field_exists(task: ClickUpTaskData, field_id: str) -> bool:
+    field = task.field_by_id(field_id)
+    value = field.value if field else None
+    if isinstance(value, list):
+        return any(isinstance(item, dict) and item.get("id") for item in value)
+    return bool(value)
 
 
 def _norm(value: object) -> str:

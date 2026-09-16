@@ -17,6 +17,10 @@ from mtm_hbl.pdf.hbl_package import (
     verification_url_for_page,
 )
 
+TERMS_VERSION = "3.0"
+TERMS_EFFECTIVE_DATE = "2026-06-11"
+TERMS_EFFECTIVE_DATE_DISPLAY = "11-JUN-2026"
+
 
 @dataclass(frozen=True)
 class AwsVerificationConfig:
@@ -127,6 +131,9 @@ def register_issued_package(
                 "canonical_json_sha256": canonical_digest,
                 "issued_at": issued_at,
                 "issued_by": issued_by,
+                "terms_version": TERMS_VERSION,
+                "terms_effective_date": TERMS_EFFECTIVE_DATE,
+                "terms_effective_date_display": TERMS_EFFECTIVE_DATE_DISPLAY,
                 "clickup_task_id": data.shipment.clickup_task_id,
                 "voided_at": "",
                 "superseded_by": "",

@@ -1,0 +1,388 @@
+{
+  "source": "AWS deployed Lambda packages; source/configuration and verification terms only",
+  "functions": {
+    "mtm-hbl-original-worker-dev": {
+      "FunctionName": "mtm-hbl-original-worker-dev",
+      "Handler": "mtm_hbl.aws_handlers.original_issuer.worker_handler",
+      "LastModified": "2026-08-28T15:41:22.000+0000",
+      "CodeSha256": "Kf+caLmJL9PJrxxUtLEwHyaTRveNubRSxySMf3sbTCo=",
+      "Runtime": "python3.11"
+    },
+    "mtm-hbl-original-webhook-dev": {
+      "FunctionName": "mtm-hbl-original-webhook-dev",
+      "Handler": "mtm_hbl.aws_handlers.original_issuer.webhook_handler",
+      "LastModified": "2026-08-28T15:40:09.000+0000",
+      "CodeSha256": "Kf+caLmJL9PJrxxUtLEwHyaTRveNubRSxySMf3sbTCo=",
+      "Runtime": "python3.11"
+    },
+    "mtm-hbl-verification-dev": {
+      "FunctionName": "mtm-hbl-verification-dev",
+      "Handler": "app.lambda_handler",
+      "LastModified": "2026-06-12T02:19:49.000+0000",
+      "CodeSha256": "89vfKtRr6c4YhYkt9ubPGfwHsvK5woBPNMokfXtgHlg=",
+      "Runtime": "python3.11"
+    }
+  },
+  "files": [
+    {
+      "path": "config/customers/repuestos_acquaroni.yaml",
+      "sha256": "9ec9cf300ce624a73e78a4f7a58b8b74b64fa4574107fbb1eb591c1e71abb5f0",
+      "function": "mtm-hbl-original-worker-dev",
+      "archive_path": "config/customers/repuestos_acquaroni.yaml"
+    },
+    {
+      "path": "config/customers/antique.yaml",
+      "sha256": "1b884eccd848d4f2361c5d566845b0742dac84d0eb1af3487490ba71e440842b",
+      "function": "mtm-hbl-original-worker-dev",
+      "archive_path": "config/customers/antique.yaml"
+    },
+    {
+      "path": "config/customers/eskolor.yaml",
+      "sha256": "d089db9e3f50ae17084b1db3e05d459c65623d11462519c5a060341d741fc5b6",
+      "function": "mtm-hbl-original-worker-dev",
+      "archive_path": "config/customers/eskolor.yaml"
+    },
+    {
+      "path": "config/customers/masesa.yaml",
+      "sha256": "866dc79d31a5970c5c1633e80b87eec7a70842c5d418142fe14d7722a54bf4c2",
+      "function": "mtm-hbl-original-worker-dev",
+      "archive_path": "config/customers/masesa.yaml"
+    },
+    {
+      "path": "config/email_templates.yaml",
+      "sha256": "3179c081585b6ab4d9b837c76ba21968b5917c15e91f925397e72c4b014b916c",
+      "function": "mtm-hbl-original-worker-dev",
+      "archive_path": "config/email_templates.yaml"
+    },
+    {
+      "path": "config/source_of_truth_rules.yaml",
+      "sha256": "337af0f459cc1edeaea1d0c47452eeef43240c913a19204d7742322b38ec9bb8",
+      "function": "mtm-hbl-original-worker-dev",
+      "archive_path": "config/source_of_truth_rules.yaml"
+    },
+    {
+      "path": "config/file_naming_rules.yaml",
+      "sha256": "b29f71357d01a48e65f05243cc0ee1e86323bb073394e85d74cf7ed544def4fb",
+      "function": "mtm-hbl-original-worker-dev",
+      "archive_path": "config/file_naming_rules.yaml"
+    },
+    {
+      "path": "config/hbl_business_rules.yaml",
+      "sha256": "c113a365514c42c4f765f9a67ff65133e4e1c383b834bd41afb8e8c79a1e42f8",
+      "function": "mtm-hbl-original-worker-dev",
+      "archive_path": "config/hbl_business_rules.yaml"
+    },
+    {
+      "path": "config/date_formats.yaml",
+      "sha256": "7c20b52d0bdc6028c845fdca9bfac84b263d8b5705c7dc907105ec34fa548799",
+      "function": "mtm-hbl-original-worker-dev",
+      "archive_path": "config/date_formats.yaml"
+    },
+    {
+      "path": "config/excel_cell_mapping.yaml",
+      "sha256": "95980b27f5d190be6a13c738acf63f3b24c2c4fd7912ee79c9286342e3d28183",
+      "function": "mtm-hbl-original-worker-dev",
+      "archive_path": "config/excel_cell_mapping.yaml"
+    },
+    {
+      "path": "config/clickup_fields.yaml",
+      "sha256": "82af67169759c24feca3d3fd2564a5ac5257acbecdcb8920cbeab128f254706e",
+      "function": "mtm-hbl-original-worker-dev",
+      "archive_path": "config/clickup_fields.yaml"
+    },
+    {
+      "path": "config/qa_rules.yaml",
+      "sha256": "109a0d35bd737b57a41d651c3d2aac25a750afbdf7f0b4bb388e3183396b0084",
+      "function": "mtm-hbl-original-worker-dev",
+      "archive_path": "config/qa_rules.yaml"
+    },
+    {
+      "path": "config/container_words.yaml",
+      "sha256": "699aad4d3e3c3d34ebc09f0f49ce7978a1c3fc68e66a7dd3e23d7cd8b04b9962",
+      "function": "mtm-hbl-original-worker-dev",
+      "archive_path": "config/container_words.yaml"
+    },
+    {
+      "path": "config/entity_rules.yaml",
+      "sha256": "e20c141cc78b6f909ffef70fdb3a8ace6f7f958f845277315172c6645da32912",
+      "function": "mtm-hbl-original-worker-dev",
+      "archive_path": "config/entity_rules.yaml"
+    },
+    {
+      "path": "src/mtm_hbl/clickup_hbl_generator.py",
+      "sha256": "b2227b6b811ffb7554cddb0f676952eb25f601fb37879c7d8b3d34056b8d5f9e",
+      "function": "mtm-hbl-original-worker-dev",
+      "archive_path": "mtm_hbl/clickup_hbl_generator.py"
+    },
+    {
+      "path": "src/mtm_hbl/aws_handlers/__init__.py",
+      "sha256": "6b5f0b58b6375e76a30300c2c808babdc789b5333f64d1bea32fc1966b952f39",
+      "function": "mtm-hbl-original-worker-dev",
+      "archive_path": "mtm_hbl/aws_handlers/__init__.py"
+    },
+    {
+      "path": "src/mtm_hbl/aws_handlers/original_issuer.py",
+      "sha256": "b2d08602cbc62fe2de8eb42136821c7da3dd9b5efe3ef73ffd5bc5d3052b0703",
+      "function": "mtm-hbl-original-worker-dev",
+      "archive_path": "mtm_hbl/aws_handlers/original_issuer.py"
+    },
+    {
+      "path": "src/mtm_hbl/aws_handlers/hbl_admin.py",
+      "sha256": "efa2a8313f3f08acae084689bcc5fcf1fff2d960e83897d5c3a60c6929c3f24a",
+      "function": "mtm-hbl-original-worker-dev",
+      "archive_path": "mtm_hbl/aws_handlers/hbl_admin.py"
+    },
+    {
+      "path": "src/mtm_hbl/clickup_connector/client.py",
+      "sha256": "23b98ade9f0fd5441a9bbbe603723b5ab81687d4ffd386dc4475369511ce0727",
+      "function": "mtm-hbl-original-worker-dev",
+      "archive_path": "mtm_hbl/clickup_connector/client.py"
+    },
+    {
+      "path": "src/mtm_hbl/clickup_connector/oauth.py",
+      "sha256": "ec64c44bd05ad8711c0464dc20ffe4cf85fcf843768de58a3cf010ca7d5f794c",
+      "function": "mtm-hbl-original-worker-dev",
+      "archive_path": "mtm_hbl/clickup_connector/oauth.py"
+    },
+    {
+      "path": "src/mtm_hbl/config.py",
+      "sha256": "3171cdc7b0c5a728192cffebefcd279cf27b635ca381cbdaaa3beff36beed8fe",
+      "function": "mtm-hbl-original-worker-dev",
+      "archive_path": "mtm_hbl/config.py"
+    },
+    {
+      "path": "src/mtm_hbl/extraction_engine/patterns.py",
+      "sha256": "599e6b48dc16fb0b3795b15c027afa5fdacfd105d80d413330ca67de217bb382",
+      "function": "mtm-hbl-original-worker-dev",
+      "archive_path": "mtm_hbl/extraction_engine/patterns.py"
+    },
+    {
+      "path": "src/mtm_hbl/extraction_engine/extractor.py",
+      "sha256": "fce34126e05ffd93a32c1639d941ca513bff6ab8379490e53933cf60c18013d4",
+      "function": "mtm-hbl-original-worker-dev",
+      "archive_path": "mtm_hbl/extraction_engine/extractor.py"
+    },
+    {
+      "path": "src/mtm_hbl/gamma_connector/client.py",
+      "sha256": "b13ef72bbbcae3e73a4943a62b57cbb1b632c4103d89b17a7cfd6b8dd0fa4d7f",
+      "function": "mtm-hbl-original-worker-dev",
+      "archive_path": "mtm_hbl/gamma_connector/client.py"
+    },
+    {
+      "path": "src/mtm_hbl/gamma_connector/__init__.py",
+      "sha256": "989533c584bc17ee657b712ae364794e14ff57384d785ed27e0b378ad14cdc0b",
+      "function": "mtm-hbl-original-worker-dev",
+      "archive_path": "mtm_hbl/gamma_connector/__init__.py"
+    },
+    {
+      "path": "src/mtm_hbl/excel/template_inspector.py",
+      "sha256": "c7e9e9b82a27263539e15b838222facbaa70a0c73b3cefa64a6c1c4d7ce0f7b0",
+      "function": "mtm-hbl-original-worker-dev",
+      "archive_path": "mtm_hbl/excel/template_inspector.py"
+    },
+    {
+      "path": "src/mtm_hbl/excel/hbl_writer.py",
+      "sha256": "f32ef5ce1396a94ed338b3a450cd3e9f30ba081b7c7a3179d1d7503f9ab70c21",
+      "function": "mtm-hbl-original-worker-dev",
+      "archive_path": "mtm_hbl/excel/hbl_writer.py"
+    },
+    {
+      "path": "src/mtm_hbl/excel/template_ingestor.py",
+      "sha256": "f2480ba7ec13ba57f6c1b4fe596f7c7b46ddd28ea19ea20e5b245424e70b7df2",
+      "function": "mtm-hbl-original-worker-dev",
+      "archive_path": "mtm_hbl/excel/template_ingestor.py"
+    },
+    {
+      "path": "src/mtm_hbl/pdf/hbl_package.py",
+      "sha256": "bd237f6dc8c519aaabdcc6e7e3671cbd322aafcd91806599a00916bfae5fbafc",
+      "function": "mtm-hbl-original-worker-dev",
+      "archive_path": "mtm_hbl/pdf/hbl_package.py"
+    },
+    {
+      "path": "src/mtm_hbl/pdf/pdf_generator.py",
+      "sha256": "6b9c6ffb113b8e0d45fc9226367d2aecf7fedad4e633a38495d31e2aeb5a3a5a",
+      "function": "mtm-hbl-original-worker-dev",
+      "archive_path": "mtm_hbl/pdf/pdf_generator.py"
+    },
+    {
+      "path": "src/mtm_hbl/__init__.py",
+      "sha256": "931e38a2b5e25cc3753de0be262098a8220cddcae412b53e8ee05ef10906ab95",
+      "function": "mtm-hbl-original-worker-dev",
+      "archive_path": "mtm_hbl/__init__.py"
+    },
+    {
+      "path": "src/mtm_hbl/utils/values.py",
+      "sha256": "38b1f04cc31d92d107ae4acb0583f24017755ce5aa209771386e73a2b0788390",
+      "function": "mtm-hbl-original-worker-dev",
+      "archive_path": "mtm_hbl/utils/values.py"
+    },
+    {
+      "path": "src/mtm_hbl/utils/file_naming.py",
+      "sha256": "02e925b6bc98ce58872767f17060fcea0f8a9d2f2db596ef0a817b835bf8d4c9",
+      "function": "mtm-hbl-original-worker-dev",
+      "archive_path": "mtm_hbl/utils/file_naming.py"
+    },
+    {
+      "path": "src/mtm_hbl/utils/dates.py",
+      "sha256": "6e3f9a70d7b6fd9ebc3bbb332538f09a3d6edc34124b581f172eb01f777a928e",
+      "function": "mtm-hbl-original-worker-dev",
+      "archive_path": "mtm_hbl/utils/dates.py"
+    },
+    {
+      "path": "src/mtm_hbl/utils/runs.py",
+      "sha256": "d4c51e2d14d05a4b29ab71aa797467f7eb3456fa73ca71bef1fa61940a406134",
+      "function": "mtm-hbl-original-worker-dev",
+      "archive_path": "mtm_hbl/utils/runs.py"
+    },
+    {
+      "path": "src/mtm_hbl/models/documents.py",
+      "sha256": "0743e036462fa824234b10dc276e5f9acb3f8bd56155fa246a6596d5098e2af9",
+      "function": "mtm-hbl-original-worker-dev",
+      "archive_path": "mtm_hbl/models/documents.py"
+    },
+    {
+      "path": "src/mtm_hbl/models/canonical.py",
+      "sha256": "6fa1ea89478ab7efe6a4d7db0708aba7b48d95b345966edadf83b7e7f429ee2e",
+      "function": "mtm-hbl-original-worker-dev",
+      "archive_path": "mtm_hbl/models/canonical.py"
+    },
+    {
+      "path": "src/mtm_hbl/models/clickup.py",
+      "sha256": "6ad2b8a82748bb9b0d3c0f55ffb5928833080595a6cc5a2cbd8ea2025dae8c7d",
+      "function": "mtm-hbl-original-worker-dev",
+      "archive_path": "mtm_hbl/models/clickup.py"
+    },
+    {
+      "path": "src/mtm_hbl/verification/aws_repository.py",
+      "sha256": "92d9702a96332b7faf5e3c8123ef79bdfce549f4a409eb475393c73cdaa3bf1d",
+      "function": "mtm-hbl-original-worker-dev",
+      "archive_path": "mtm_hbl/verification/aws_repository.py"
+    },
+    {
+      "path": "src/mtm_hbl/audit/audit_logger.py",
+      "sha256": "5996362e7f44e8c70a771ba22091075dccfc04ec271bec6ae6aa50a1c5f43d19",
+      "function": "mtm-hbl-original-worker-dev",
+      "archive_path": "mtm_hbl/audit/audit_logger.py"
+    },
+    {
+      "path": "src/mtm_hbl/pipeline.py",
+      "sha256": "ad8e118f017e0f40db1b8da3538d8ab5fb9a074bf697815f2ff6cc519d3c347a",
+      "function": "mtm-hbl-original-worker-dev",
+      "archive_path": "mtm_hbl/pipeline.py"
+    },
+    {
+      "path": "src/mtm_hbl/review/review_packet.py",
+      "sha256": "fa648fadafae4f3d5f191a03d175f8289bab6868df94292e7ae6b5c698d97ade",
+      "function": "mtm-hbl-original-worker-dev",
+      "archive_path": "mtm_hbl/review/review_packet.py"
+    },
+    {
+      "path": "src/mtm_hbl/document_classifier/classifier.py",
+      "sha256": "ed68f089e2f57d94a506f1d653219c7d9c3ada37cd936da713e0203802fcf559",
+      "function": "mtm-hbl-original-worker-dev",
+      "archive_path": "mtm_hbl/document_classifier/classifier.py"
+    },
+    {
+      "path": "src/mtm_hbl/api/main.py",
+      "sha256": "b92473d33ca01368c554645e66022787b20692f17c81f7e91b0af468f859d063",
+      "function": "mtm-hbl-original-worker-dev",
+      "archive_path": "mtm_hbl/api/main.py"
+    },
+    {
+      "path": "src/mtm_hbl/document_loader/pdf_text.py",
+      "sha256": "b8b68cb2e328fb3e4f087749d6fce3fbade16b5e24e8c05dcab25ff636db25c8",
+      "function": "mtm-hbl-original-worker-dev",
+      "archive_path": "mtm_hbl/document_loader/pdf_text.py"
+    },
+    {
+      "path": "src/mtm_hbl/document_loader/ocr.py",
+      "sha256": "753673e56b403de177b63f332230d646128c8052bf98512d9ed5a77c34f41c94",
+      "function": "mtm-hbl-original-worker-dev",
+      "archive_path": "mtm_hbl/document_loader/ocr.py"
+    },
+    {
+      "path": "src/mtm_hbl/document_loader/loader.py",
+      "sha256": "a8ec268000f7e8c2c2976797a0d305ae02fd3c97032415e5cc4edc20c2c86490",
+      "function": "mtm-hbl-original-worker-dev",
+      "archive_path": "mtm_hbl/document_loader/loader.py"
+    },
+    {
+      "path": "src/mtm_hbl/local_review.py",
+      "sha256": "79b5743347350f34a1412181b582211428c16fc2a52a4cd2027a0cb4d314c447",
+      "function": "mtm-hbl-original-worker-dev",
+      "archive_path": "mtm_hbl/local_review.py"
+    },
+    {
+      "path": "src/mtm_hbl/resolver/source_of_truth_resolver.py",
+      "sha256": "5536053d3fe6ef406685cbcd5825e5e247a422776c7845db1c7d687751fdad60",
+      "function": "mtm-hbl-original-worker-dev",
+      "archive_path": "mtm_hbl/resolver/source_of_truth_resolver.py"
+    },
+    {
+      "path": "src/mtm_hbl/resolver/charges.py",
+      "sha256": "6d50c9cbebf128b0af4e5aa78cbf5d5466bcd4b230b46323e2ad5eb7322f4e0a",
+      "function": "mtm-hbl-original-worker-dev",
+      "archive_path": "mtm_hbl/resolver/charges.py"
+    },
+    {
+      "path": "src/mtm_hbl/resolver/customer_rules.py",
+      "sha256": "39a66cd630099e7745f58e6c40f1e3939a3297dc43ef5cb14a917e7e59ec6af9",
+      "function": "mtm-hbl-original-worker-dev",
+      "archive_path": "mtm_hbl/resolver/customer_rules.py"
+    },
+    {
+      "path": "src/mtm_hbl/resolver/business_rules.py",
+      "sha256": "643bf04c69b66a9d02d1c117210023387dbdf91470da6ef6278ea3ae41f9168a",
+      "function": "mtm-hbl-original-worker-dev",
+      "archive_path": "mtm_hbl/resolver/business_rules.py"
+    },
+    {
+      "path": "src/mtm_hbl/validation/validation_engine.py",
+      "sha256": "46f298f09c8491fc77d77fb8871a83342f80bddf6a550be32d04814379ae57a5",
+      "function": "mtm-hbl-original-worker-dev",
+      "archive_path": "mtm_hbl/validation/validation_engine.py"
+    },
+    {
+      "path": "src/mtm_hbl/validation/carrier_receipt.py",
+      "sha256": "7b095ef8ed18cc195be6c0d1aa190a2ce5aa7a01fd0e87c647bdfc055992d860",
+      "function": "mtm-hbl-original-worker-dev",
+      "archive_path": "mtm_hbl/validation/carrier_receipt.py"
+    },
+    {
+      "path": "src/mtm_hbl/reports/qa_reporter.py",
+      "sha256": "3b764a05a68bed2e2b0709f173019ea21cd81d27aa4a83856e55354dfbdbe4e0",
+      "function": "mtm-hbl-original-worker-dev",
+      "archive_path": "mtm_hbl/reports/qa_reporter.py"
+    },
+    {
+      "path": "aws/verification-service/src/terms/mtm-logix-terms-v3.0-es.md",
+      "sha256": "39e7ca634acc4b468a3793179f8e36db0839093f85690dd21c6d3a3abad44993",
+      "function": "mtm-hbl-verification-dev",
+      "archive_path": "terms/mtm-logix-terms-v3.0-es.md"
+    },
+    {
+      "path": "aws/verification-service/src/terms/mtm-logix-terms-v3.0-en.md",
+      "sha256": "da499df062a5f2e75b4ec29e8da1cbea94e238b35fc8d402a554fd9ef2924b23",
+      "function": "mtm-hbl-verification-dev",
+      "archive_path": "terms/mtm-logix-terms-v3.0-en.md"
+    },
+    {
+      "path": "aws/verification-service/src/terms/mtm-logix-terms-v3.0-zh-CN.md",
+      "sha256": "a7c7b40d012291af3ba64f8bca6bb8c9400e42af5cb3323aa37884e604b170eb",
+      "function": "mtm-hbl-verification-dev",
+      "archive_path": "terms/mtm-logix-terms-v3.0-zh-CN.md"
+    },
+    {
+      "path": "aws/verification-service/src/terms/mtm-logix-terms-v3.0-pt-BR.md",
+      "sha256": "202d8f57ac2d98d1bc9b68e810c5650ae4aa06a27a23a74221824c6a7690fe86",
+      "function": "mtm-hbl-verification-dev",
+      "archive_path": "terms/mtm-logix-terms-v3.0-pt-BR.md"
+    },
+    {
+      "path": "aws/verification-service/src/app.py",
+      "sha256": "ebeb66e2d30e819d51ffbb2605581e0a787f0a17b56fdbb2d8e85e8d8d6f2a31",
+      "function": "mtm-hbl-verification-dev",
+      "archive_path": "app.py"
+    }
+  ]
+}

@@ -1,0 +1,2 @@
+# Preserve the deployed terms' Markdown hard line breaks (two trailing spaces).
+aws/verification-service/src/terms/*.md whitespace=-blank-at-eol

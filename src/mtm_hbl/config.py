@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     hbl_verification_base_url: str = ""
     hbl_verification_bucket: str = ""
     hbl_verification_table: str = ""
+    gamma_api_key: str = ""
+    gamma_api_base_url: str = "https://public-api.gamma.app/v1.0"
 
     model_config = SettingsConfigDict(
         env_file=".env",

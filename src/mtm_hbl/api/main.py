@@ -88,6 +88,7 @@ class ClickUpHblGenerationRequest(BaseModel):
     table: str | None = None
     region: str | None = None
     issued_by: str = "Andrea Piedad Velasquez Castellon"
+    prevent_original_overwrite: bool = False
 
 
 class LocalReviewRequest(BaseModel):
@@ -413,6 +414,7 @@ async def generate_hbl_from_clickup_link(
             table=request.table or "",
             region=request.region or "",
             issued_by=request.issued_by,
+            prevent_original_overwrite=request.prevent_original_overwrite,
         )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc

@@ -86,6 +86,9 @@ def test_register_issued_package_uploads_encrypted_private_artifacts(monkeypatch
     assert fake_s3.objects[0]["ContentType"] == "application/json"
     assert len(fake_table.items) == 6
     assert fake_table.items[0]["status"] == "ISSUED"
+    assert fake_table.items[0]["terms_version"] == "3.0"
+    assert fake_table.items[0]["terms_effective_date"] == "2026-06-11"
+    assert fake_table.items[0]["terms_effective_date_display"] == "11-JUN-2026"
     assert fake_table.items[0]["verification_url"] == "https://verify.example.com/verify/WH26040006-O1"
     assert registration.verification_urls["WH26040006-O1"] == (
         "https://verify.example.com/verify/WH26040006-O1"
