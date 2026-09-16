@@ -1,4 +1,4 @@
-# Package path boundary — CodeQL alert 40
+# Package path boundary — CodeQL alerts 40/41
 
 ## Outcome: fixed in candidate source
 
@@ -10,7 +10,8 @@ real and is now enforced before rendering or reading.
 
 HTTP paths are confined to the configured runs directory after resolving symlinks.
 Generated identifier components and requested filenames are checked. Registration
-requires an explicit authorized root and checks containment before reading. It
+requires an explicit authorized root and checks containment before reading.
+A second resolved-prefix check directly guards the file-open operation. It
 validates, hashes, and uploads one byte snapshot. Trusted CLI callers retain their
 explicitly selected output directory; Lambda callers retain their /tmp output
 directories; the default HTTP per-task layout is preserved.
@@ -29,3 +30,8 @@ reviewer's confirmed default-directory regression was corrected and tested.
 Commands: `python -m pytest tests/test_package_path_boundary.py -q` passed;
 `git diff --check` passed. Full suite and GitHub CodeQL are checked on the final
 candidate commit before release. No live shipment or document was used for this fix.
+
+The 140-test suite passes locally. The simulated concurrency test serializes
+individual Moto API calls to model DynamoDB atomic requests, while allowing the
+multi-request claim sequences to interleave. The independent live-AWS concurrency
+test remains the evidence for actual simultaneous claimants.

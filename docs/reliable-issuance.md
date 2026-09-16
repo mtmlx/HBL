@@ -42,7 +42,7 @@ flagged for reconciliation; this change does not claim automatic draft recovery.
 
 ### Test evidence (2026-09-16 UTC)
 
-- All 118 local tests pass, including five full-worker fault simulations using
+- All 140 local tests pass, including five full-worker fault simulations using
   the real PDF renderer/registration code, AWS emulation, and a fake ClickUp client.
   Restart/replay retained one package ID, six verification records, matching PDF
   SHA-256, one upload/status/comment at confirmed boundaries, and the assigned
@@ -55,15 +55,16 @@ flagged for reconciliation; this change does not claim automatic draft recovery.
   run a real Lambda timeout or queue redrive. The reusable opt-in runner is
   `tools/test_job_journal_aws.py`.
 - A live ClickUp trial remains pending a designated sandbox task/list. No customer
-  task, live HBL, verification record, queue setting, or deployed Lambda was changed.
+  task, live HBL, verification record, or deployed Lambda was changed by tests.
+  The separately authorized queue/alarm configuration is recorded below.
 
 ### Deployment checklist
 
-Live configuration inspected during development: worker timeout 180 seconds,
-queue visibility 180 seconds, batch size 1, DLQ redrive after three receives.
+Current configuration: worker timeout 180 seconds, queue visibility 1080 seconds,
+batch size 1, DLQ redrive after three receives.
 Before deploying this candidate:
 
-1. Set queue visibility to at least 1080 seconds (six times current timeout and
+1. Preserve queue visibility of at least 1080 seconds (six times current timeout and
    longer than the 960-second lease), plus any batch window. Otherwise crashes
    can exhaust receives before a lease expires. Retain the DLQ and alarm on its
    visible-message count. Alert on NEEDS_REVIEW / reconciliation-required logs.
