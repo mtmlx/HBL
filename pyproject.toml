@@ -16,7 +16,7 @@ dependencies = [
   "pypdf>=4.3.0",
   "pdfplumber>=0.11.0",
   "qrcode[pil]>=7.4.2",
-  "boto3>=1.34.0",
+  "boto3>=1.43.95",
   "python-dotenv>=1.0.1",
   "PyJWT[crypto]>=2.13.0",
 ]

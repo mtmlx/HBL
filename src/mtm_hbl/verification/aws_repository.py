@@ -73,24 +73,20 @@ def register_issued_package(
     dynamodb = boto3.resource("dynamodb", region_name=config.region_name)
     table = dynamodb.Table(config.table_name)
 
-    s3.upload_file(
-        str(pdf_path),
-        config.bucket_name,
-        pdf_s3_key,
-        ExtraArgs={
-            "ServerSideEncryption": "AES256",
-            "ContentType": "application/pdf",
-            "Metadata": {
+    s3.put_object(
+        Bucket=config.bucket_name, Key=pdf_s3_key, Body=pdf_path.read_bytes(),
+        IfNoneMatch="*", ServerSideEncryption="AES256", ContentType="application/pdf",
+        Metadata={
                 "hbl-number": data.shipment.mtm_hbl_no,
                 "package-id": package_id,
                 "sha256": pdf_digest,
-            },
         },
     )
     s3.put_object(
         Bucket=config.bucket_name,
         Key=canonical_json_s3_key,
         Body=canonical_json,
+        IfNoneMatch="*",
         ServerSideEncryption="AES256",
         ContentType="application/json",
         Metadata={
@@ -102,6 +98,7 @@ def register_issued_package(
 
     verification_urls: dict[str, str] = {}
     normalized_status = status.upper()
+    writes = []
     for page_config in build_document_page_set(data):
         verification_id = verification_id_for_page(data, page_config, suffix=verification_id_suffix)
         verification_url = verification_url_for_page(
@@ -111,8 +108,9 @@ def register_issued_package(
             suffix=verification_id_suffix,
         )
         verification_urls[verification_id] = verification_url
-        table.put_item(
-            Item={
+        writes.append({"Put": {"TableName": config.table_name,
+            "ConditionExpression": "attribute_not_exists(verification_id)",
+            "Item": {
                 "verification_id": verification_id,
                 "verification_url": verification_url,
                 "package_id": package_id,
@@ -138,7 +136,10 @@ def register_issued_package(
                 "voided_at": "",
                 "superseded_by": "",
             }
-        )
+        }})
+    if not 1 <= len(writes) <= 100:
+        raise ValueError("Package exceeds atomic registration limit.")
+    dynamodb.meta.client.transact_write_items(TransactItems=writes)
 
     return IssuedPackageRegistration(
         package_id=package_id,
@@ -182,3 +183,35 @@ def _issue_year(data: CanonicalHblData) -> str:
         if token.isdigit() and len(token) == 4:
             return token
     return ""
+
+
+def activate_replacement(config, old_records, replacement, *, reason):
+    """All prior records become VOID in the same transaction that activates the new set."""
+    if not old_records or not reason.strip():
+        raise ValueError("Replacement requires prior records and a reason.")
+    resource = boto3.resource("dynamodb", region_name=config.region_name)
+    old_ids = {r.verification_id for r in old_records}
+    new_ids = set(replacement.verification_urls)
+    if old_ids & new_ids or len(new_ids) != 6 or len(old_ids) + len(new_ids) > 100:
+        raise ValueError("Invalid or oversized replacement record set.")
+    now = datetime.now(timezone.utc).isoformat()
+    writes = []
+    for r in old_records:
+        writes.append({"Update": {
+            "TableName": config.table_name, "Key": {"verification_id": r.verification_id},
+            "ConditionExpression": "#s = :issued AND package_id = :old AND hbl_number = :hbl",
+            "UpdateExpression": "SET #s = :void, superseded_by = :new, voided_at = :now, void_reason = :reason",
+            "ExpressionAttributeNames": {"#s": "status"},
+            "ExpressionAttributeValues": {":issued": "ISSUED", ":old": r.package_id, ":hbl": replacement.hbl_number,
+                ":void": "VOID", ":new": replacement.package_id, ":now": now, ":reason": reason},
+        }})
+    for vid in new_ids:
+        writes.append({"Update": {
+            "TableName": config.table_name, "Key": {"verification_id": vid},
+            "ConditionExpression": "#s = :prepared AND package_id = :new AND pdf_sha256 = :hash AND hbl_number = :hbl",
+            "UpdateExpression": "SET #s = :issued",
+            "ExpressionAttributeNames": {"#s": "status"},
+            "ExpressionAttributeValues": {":prepared": "PREPARED", ":new": replacement.package_id,
+                ":hash": replacement.pdf_sha256, ":hbl": replacement.hbl_number, ":issued": "ISSUED"},
+        }})
+    resource.meta.client.transact_write_items(TransactItems=writes)

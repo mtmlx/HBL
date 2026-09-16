@@ -101,7 +101,7 @@ def render_html(verification_id, record, requested_language=DEFAULT_TERMS_LANGUA
     status = str(record.get("status", "UNKNOWN"))
     status_class = "status-good" if status.upper() == "ISSUED" else "status-warning"
     warning = ""
-    if status.upper() in {"VOID", "SUPERSEDED", "NOT_FOUND", "UNKNOWN"}:
+    if status.upper() != "ISSUED":
         warning = (
             "<div class='alert alert-danger'>"
             f"WARNING: document status is {html.escape(status)}. Contact MTM Logix before accepting this document."

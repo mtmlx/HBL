@@ -1,5 +1,9 @@
 # AWS source baseline and operational routine
 
+This document describes the historical AWS capture in PR #2. The reliability
+candidate changes that runtime; see `reliable-issuance.md` for current behavior.
+Do not treat the candidate as byte-identical to the deployed source.
+
 ## Source of truth for this synchronization
 
 This change recovers application source and configuration from the existing AWS

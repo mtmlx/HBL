@@ -8,6 +8,7 @@ from hashlib import sha256
 import hmac
 import html
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -25,10 +26,11 @@ from mtm_hbl.clickup_hbl_generator import (
     _data_from_clickup_task,
     _enforce_clickup_hbl_number,
     generate_hbl_from_clickup,
-    parse_clickup_task_id,
+    parse_clickup_task_id, complete_clickup_artifact, ClickUpHblGenerationResult, canonical_fingerprint,
 )
 from mtm_hbl.config import AppConfig, Settings
-from mtm_hbl.verification.aws_repository import AwsVerificationConfig, void_verification_records
+from mtm_hbl.verification.aws_repository import AwsVerificationConfig, activate_replacement
+from mtm_hbl.aws_handlers.job_journal import JobJournal
 
 
 secretsmanager = boto3.client("secretsmanager")
@@ -147,7 +149,17 @@ async def _preview_reissue(event: dict[str, Any], user: AdminUser) -> dict[str, 
     if not task_ref:
         raise ValueError("ClickUp task link or task ID is required.")
 
+    reason = str(form.get("reason", "")).strip()
+    if not reason or len(reason) > 1000:
+        raise ValueError("A reissue reason of 1–1000 characters is required.")
     preview = await _load_reissue_preview(task_ref)
+    if not preview["active_records"]:
+        raise ValueError("No active original exists to replace.")
+    plan = {"task_id": preview["task_id"], "hbl_number": preview["hbl_number"],
+            "old": sorted((r.verification_id, r.package_id) for r in preview["active_records"]),
+            "data_hash": preview["data_hash"], "reason": reason, "email": user.email,
+            "nonce": token_urlsafe(24), "exp": _unix_now() + STATE_MAX_AGE_SECONDS}
+    operation_token = _sign_token(plan, _session_secret())
     active_rows = "".join(
         f"<tr><td>{_e(record.package_id)}</td><td>{_e(record.verification_id)}</td><td>{_e(record.issued_at)}</td></tr>"
         for record in preview["active_records"]
@@ -171,9 +183,11 @@ async def _preview_reissue(event: dict[str, Any], user: AdminUser) -> dict[str, 
       <input type="hidden" name="csrf_token" value="{_e(_csrf_from_cookie(event))}">
       <input type="hidden" name="task_ref" value="{_e(task_ref)}">
       <input type="hidden" name="expected_hbl_number" value="{_e(preview["hbl_number"])}">
+      <input type="hidden" name="operation_token" value="{_e(operation_token)}">
+      <p><strong>Reason:</strong> {_e(reason)}</p>
       <label>Confirmation text</label>
       <input name="confirmation" autocomplete="off" placeholder="Type REISSUE {_e(preview["hbl_number"])}" required>
-      <p class="warning">This will issue a new ORIGINAL/COPY package, replace the ClickUp HBL Original field, and void the currently active verification records after the replacement succeeds.</p>
+      <p class="warning">This will issue a new ORIGINAL/COPY package, atomically activate the replacement and void the current records, then update the ClickUp HBL Original field and comments.</p>
       <button type="submit">Void Current and Issue Replacement</button>
       <a class="secondary" href="/admin">Cancel</a>
     </form>
@@ -189,21 +203,51 @@ async def _confirm_reissue(event: dict[str, Any], user: AdminUser) -> dict[str, 
     if confirmation != f"reissue {expected_hbl_number}".casefold():
         raise ValueError(f"Confirmation must be exactly: REISSUE {expected_hbl_number}")
 
-    preview = await _load_reissue_preview(task_ref)
-    if preview["hbl_number"] != expected_hbl_number:
-        raise ValueError("HBL number changed between preview and confirmation. Start again.")
-
-    old_records: list[ActiveVerificationRecord] = preview["active_records"]
-    result = await _issue_replacement(task_ref, user)
-    old_ids = [record.verification_id for record in old_records]
-    if old_ids:
-        void_verification_records(
-            _verification_config(),
-            old_ids,
-            superseded_by=result.package_id,
-            reason=f"Manager-controlled reissue by {user.email}. Replacement original package issued.",
-        )
-    await _post_reissue_comment(preview["task_id"], user, old_records, result)
+    token = str(form.get("operation_token", ""))
+    plan = _verify_token(token, _session_secret())
+    task_id = parse_clickup_task_id(task_ref)
+    if plan.get("task_id") != task_id or plan.get("hbl_number") != expected_hbl_number or plan.get("email") != user.email:
+        raise ValueError("Confirmation does not match the signed preview.")
+    operation_id = sha256(token.encode()).hexdigest()
+    table = dynamodb.Table(_required_env("HBL_ISSUER_JOBS_TABLE"))
+    prior = table.get_item(Key={"job_id": f"original#{task_id}"}, ConsistentRead=True).get("Item", {})
+    # Reject stale new previews before replacing a completed task lock.
+    if prior.get("operation_id") != operation_id:
+        await _validate_reissue_plan(task_ref, plan)
+    journal = JobJournal(table, f"original#{task_id}", task_id, "issue",
+                         operation_id=operation_id, allow_new_operation=True)
+    old_records = [ActiveVerificationRecord(vid, pkg, "ISSUED") for vid, pkg in plan["old"]]
+    old_ids = [r.verification_id for r in old_records]
+    if journal.done or journal.phase == "COMPLETE":
+        result = ClickUpHblGenerationResult.model_validate(journal.artifact["result"])
+        if not journal.done:
+            journal.complete("issue")
+    else:
+        try:
+            await _validate_reissue_plan(task_ref, plan)
+            def checkpoint(phase, artifact):
+                # A manager operation is a single non-replayable operation until
+                # all writes are confirmed. Preserve its subphase for reconciliation.
+                journal.save("REISSUING", {**artifact, "plan": plan, "subphase": phase})
+            checkpoint("START", {})
+            result = await _issue_replacement(task_ref, user, checkpoint=checkpoint, expected_data_hash=plan["data_hash"])
+            artifact = journal.artifact
+            checkpoint("ACTIVATING", artifact)
+            activate_replacement(_verification_config(), old_records, result, reason=plan["reason"])
+            settings = _lambda_settings()
+            client = ClickUpClient(settings, _clickup_access_token())
+            result = await complete_clickup_artifact(client, artifact, checkpoint=checkpoint)
+            checkpoint("POSTING_AUDIT", {**artifact, "result": result.model_dump()})
+            await _post_reissue_comment(task_id, user, old_records, result, reason=plan["reason"])
+            journal.save("COMPLETE", {"result": result.model_dump(), "plan": plan})
+            journal.complete("issue")
+        except Exception:
+            logging.exception("HBL_REISSUE_RECONCILIATION_REQUIRED task=%s operation=%s", task_id, operation_id)
+            try:
+                journal.fail()
+            except Exception:
+                logging.exception("HBL_CHECKPOINT_FAILURE_RECONCILE_BEFORE_RETRY")
+            raise
 
     first_url = next(iter(result.verification_urls.values()), "")
     body = f"""
@@ -218,6 +262,14 @@ async def _confirm_reissue(event: dict[str, Any], user: AdminUser) -> dict[str, 
     <p><a class="secondary" href="/admin">Issue another reissue</a></p>
     """
     return _html_response(_page("HBL Reissue Complete", body, user=user))
+
+
+async def _validate_reissue_plan(task_ref, plan):
+    preview = await _load_reissue_preview(task_ref)
+    actual = sorted([r.verification_id, r.package_id] for r in preview["active_records"])
+    expected = sorted([vid, pkg] for vid, pkg in plan["old"])
+    if actual != expected or preview["data_hash"] != plan["data_hash"] or preview["hbl_number"] != plan["hbl_number"]:
+        raise ValueError("Shipment or active package changed after preview. Start again.")
 
 
 async def _load_reissue_preview(task_ref: str) -> dict[str, Any]:
@@ -238,10 +290,11 @@ async def _load_reissue_preview(task_ref: str) -> dict[str, Any]:
         "task_name": task.name,
         "hbl_number": hbl_number,
         "active_records": active_records,
+        "data_hash": canonical_fingerprint(data),
     }
 
 
-async def _issue_replacement(task_ref: str, user: AdminUser):
+async def _issue_replacement(task_ref: str, user: AdminUser, *, checkpoint, expected_data_hash):
     settings = _lambda_settings()
     client = ClickUpClient(settings, _clickup_access_token())
     return await generate_hbl_from_clickup(
@@ -259,11 +312,11 @@ async def _issue_replacement(task_ref: str, user: AdminUser):
         table=settings.hbl_verification_table,
         region=settings.aws_region,
         issued_by=os.getenv("HBL_ISSUED_BY", "Andrea Piedad Velasquez Castellon"),
-        prevent_original_overwrite=False,
+        prevent_original_overwrite=False, checkpoint=checkpoint, prepare_only=True, expected_data_hash=expected_data_hash,
     )
 
 
-async def _post_reissue_comment(task_id: str, user: AdminUser, old_records: list[ActiveVerificationRecord], result) -> None:
+async def _post_reissue_comment(task_id: str, user: AdminUser, old_records: list[ActiveVerificationRecord], result, *, reason: str) -> None:
     settings = _lambda_settings()
     client = ClickUpClient(settings, _clickup_access_token())
     task = await client.get_task(task_id)
@@ -273,6 +326,7 @@ async def _post_reissue_comment(task_id: str, user: AdminUser, old_records: list
     comment = (
         "Original HBL reissued through the manager portal.\n\n"
         f"Requested by: {user.email}\n"
+        f"Reason: {reason}\n"
         f"Voided prior package(s): {', '.join(old_packages) if old_packages else 'None found'}\n"
         f"Replacement package: {result.package_id}\n"
         f"New verification: {first_url}\n\n"
@@ -284,6 +338,7 @@ async def _post_reissue_comment(task_id: str, user: AdminUser, old_records: list
 def _active_verification_records(hbl_number: str) -> list[ActiveVerificationRecord]:
     table = dynamodb.Table(_required_env("HBL_VERIFICATION_TABLE"))
     response = table.scan(
+        ConsistentRead=True,
         FilterExpression="hbl_number = :h AND #status = :s",
         ExpressionAttributeNames={"#status": "status"},
         ExpressionAttributeValues={":h": hbl_number, ":s": "ISSUED"},
@@ -292,6 +347,7 @@ def _active_verification_records(hbl_number: str) -> list[ActiveVerificationReco
     items = list(response.get("Items", []))
     while "LastEvaluatedKey" in response:
         response = table.scan(
+            ConsistentRead=True,
             FilterExpression="hbl_number = :h AND #status = :s",
             ExpressionAttributeNames={"#status": "status"},
             ExpressionAttributeValues={":h": hbl_number, ":s": "ISSUED"},
@@ -564,12 +620,14 @@ def _admin_form_response(user: AdminUser) -> dict[str, Any]:
     body = f"""
     <h1>Void and Reissue HBL Original</h1>
     <div class="panel">
-      <p>This portal is restricted to authorized MTM users. It issues a replacement ORIGINAL package and voids the prior verification records only after the new package is successfully uploaded to ClickUp.</p>
+      <p>This portal is restricted to authorized MTM users. It issues a replacement ORIGINAL package and atomically replaces the prior verification records, then completes the ClickUp attachment, status, and comments.</p>
     </div>
     <form method="post" action="/admin/reissue/preview">
       <input type="hidden" name="csrf_token" value="{_e(csrf)}">
       <label>ClickUp task link or task ID</label>
       <input name="task_ref" placeholder="https://app.clickup.com/t/8451352/86e277kqk" required autofocus>
+      <label>Reason for reissue</label>
+      <input name="reason" maxlength="1000" required>
       <button type="submit">Review Current Original</button>
     </form>
     """

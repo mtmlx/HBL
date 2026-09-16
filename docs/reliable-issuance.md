@@ -1,14 +1,14 @@
 # Reliable issuance: candidate, not deployed
 
 This change builds on the captured AWS source in PR #2. The historical baseline
-is intentionally unchanged. The three changed runtime files and new job journal
+is intentionally unchanged. The changed runtime files and new job journal
 will not match that baseline until a reviewed release is deployed and recaptured.
 
 ## Guarantees within the queued issuer
 
 - One conditional DynamoDB claim per task; another invocation cannot claim a
   live lease. Every checkpoint verifies ownership and lease validity.
-- The 960-second lease exceeds Lambda's maximum 900-second execution lifetime.
+- The 960-second lease exceeds the standard Lambda 900-second execution limit.
   An expired owner cannot checkpoint or begin a new guarded mutation.
 - Failed invocations raise to SQS. This works with the current batch size 1 and
   without partial-batch configuration. Processing stops on failure for FIFO safety.
@@ -86,19 +86,67 @@ Before deploying this candidate:
 Stop automatic attempts for NEEDS_REVIEW. Read the job's phase/artifact JSON;
 inspect the saved package's S3 objects, hashes, all verification records, ClickUp
 attachment IDs, status, and comments. A timeout is not proof a write failed.
-For registration ambiguity, repair/complete the same package or void its partial
-records through an audited operation. Never generate a replacement merely to
+For registration ambiguity, inspect the complete transaction outcome and the
+existing S3 objects; reconcile the same package through an audited operation. Never generate a replacement merely to
 repair its comment. Only after readback may an operator advance the checkpoint
 under a conditional write and redrive the existing job. Do not blindly reset it.
 
-## Limits
+## Manager reissue safeguards
 
-These are failure-containment guarantees, not a claim of exactly-once execution
-across independent services. The six verification writes are still sequential;
-an interrupted registration can leave a partial package requiring reconciliation.
-Ambiguous ClickUp responses require readback by an operator. The dormant manager
-reissue route and direct local issuance tools do not use the queued-worker journal;
-do not expose/automate them as a resilient reissue service. A manager reissue release
-still needs a shared operation lock, signed request identity, and an atomic
-old/new verification transition. AWS and ClickUp staging fault tests remain a
-release requirement; mocked tests alone do not establish production readiness.
+The manager confirmation now carries a signed, expiring preview binding the user,
+task, HBL, prior record IDs/package IDs, shipment fingerprint, and customer reason.
+The shipment fingerprint is rechecked immediately before generation. Normal worker
+issuance and manager reissue share the same task lock. Repeated confirmations reuse
+the completed result; another operation cannot replace an in-progress/uncertain one.
+
+A replacement is registered as PREPARED. One conditional DynamoDB transaction voids
+all signed prior records and activates all six replacement records. A conflict rolls
+back the entire switch. Only then does ClickUp attachment/status/comment completion
+run. The old attachment remains if uploading the replacement fails, but its prior
+verification records are then VOID; the existing replacement must be reconciled.
+The manager operation is quarantined on an uncertain failure; it is never blindly
+reissued. Customer reason is recorded in the void records and assigned audit comment.
+
+Registration itself now writes the complete verification set in one transaction.
+PDF and canonical S3 objects use conditional creation and cannot overwrite an
+existing package object. PREPARED and every non-ISSUED verification status displays
+an explicit warning. There is no all-service transaction across S3, DynamoDB and
+ClickUp: prepared/orphaned objects and uncertain ClickUp outcomes require readback.
+
+## Additional test evidence
+
+The manager flow is tested with synthetic data for successful atomic switching,
+duplicate confirmations, shared worker/manager exclusion, expired/interrupted work,
+stale/tampered/wrong-user previews, shipment changes, transaction conflicts, and
+ClickUp failure after activation. Three additional checks passed against a disposable
+real DynamoDB table: conflict rollback, complete 6-old/6-new switch, and duplicate
+rejection. The table was deleted and absence verified. No actual HBL was generated
+or reissued by the live test. Use `tools/test_atomic_switch_aws.py` to repeat it.
+
+## Configuration and release
+
+`PYTHONPATH=src python tools/configure_hbl_recovery.py --profile PROFILE` inspects the
+live queue. Applying requires `--apply --alarm-topic SNS_TOPIC_ARN`; it sets at least
+1080 seconds for the inspected 180-second worker, installs an error metric filter,
+creates DLQ/recovery alarms, and reads back the settings. It never invokes Lambda,
+redrives jobs, deploys code, or changes a shipment. The alert destination is pending.
+If a manager Lambda is deployed later, add the same alerting for its
+HBL_REISSUE_RECONCILIATION_REQUIRED and HBL_CHECKPOINT_FAILURE log markers.
+
+Read-only preflight found 52 legacy FAILED jobs, zero legacy RUNNING jobs, and no
+existing HBL alarms. These failed jobs are not safe to automatically replay. Existing
+role permissions currently permit the required operations; its broad managed admin
+policy is outside this patch and should be replaced through a separately reviewed
+least-privilege change across all functions sharing the role.
+
+## Remaining operational limits
+
+No deployment or live shipment mutation has occurred. The manager route is still
+not exposed by a deployed handler/API route; this patch does not enable one. Direct
+low-level issuance tools do not acquire the task journal and must not be used as a
+retry mechanism. The lock coordinates operations on the same ClickUp task, not
+independent tasks with an accidentally duplicated HBL number. External edits can
+still race with ClickUp writes. Ambiguous results remain fail-closed for operator
+reconciliation. Live ClickUp fault injection requires an isolated test task; the
+read-only CANEI276138722 checks do not substitute for that release test. Independent
+review, monitored staging, configuration, and deployment are still required.

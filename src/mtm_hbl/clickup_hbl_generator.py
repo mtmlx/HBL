@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from hashlib import sha256
 import re
 from pathlib import Path
 from typing import Callable, Literal
@@ -18,6 +19,12 @@ from mtm_hbl.verification.aws_repository import AwsVerificationConfig, register_
 
 
 GenerationMode = Literal["auto", "draft", "issue"]
+
+
+def canonical_fingerprint(data):
+    values = data.model_dump(mode="json")
+    fields = ("shipment", "parties", "routing", "cargo", "containers", "charges", "carrier_receipt")
+    return sha256(json.dumps({k: values[k] for k in fields}, sort_keys=True).encode()).hexdigest()
 
 
 class ApprovalDecision(BaseModel):
@@ -81,12 +88,16 @@ async def generate_hbl_from_clickup(
     issued_by: str = "Andrea Piedad Velasquez Castellon",
     prevent_original_overwrite: bool = False,
     checkpoint: Callable[[str, dict], None] | None = None,
+    prepare_only: bool = False,
+    expected_data_hash: str | None = None,
 ) -> ClickUpHblGenerationResult:
     task_id = parse_clickup_task_id(task_ref)
     task = await client.get_task(task_id)
     clickup_values = client.extract_configured_fields(task, app_config)
     data = _data_from_clickup_task(task, clickup_values, app_config)
     _enforce_clickup_hbl_number(data, clickup_values)
+    if expected_data_hash and canonical_fingerprint(data) != expected_data_hash:
+        raise ValueError("Shipment changed after preview; start a fresh confirmation.")
 
     approval = evaluate_hbl_approval(task, app_config)
     warnings = [issue.message for issue in data.qa.soft_warnings]
@@ -140,7 +151,7 @@ async def generate_hbl_from_clickup(
                 region_name=region,
                 verification_base_url=verification_base_url,
             ),
-            status="ISSUED",
+            status="PREPARED" if prepare_only else "ISSUED",
             package_id=package_id,
             verification_id_suffix=verification_id_suffix,
             issued_by=issued_by,
@@ -171,6 +182,8 @@ async def generate_hbl_from_clickup(
     }
     if checkpoint:
         checkpoint("READY", artifact)
+    if prepare_only:
+        return result
     return await complete_clickup_artifact(client, artifact, checkpoint=checkpoint)
 
 

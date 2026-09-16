@@ -24,13 +24,14 @@ class ReconciliationRequired(RuntimeError):
 
 
 class JobJournal:
-    def __init__(self, table, job_id, task_id, mode):
+    def __init__(self, table, job_id, task_id, mode, *, operation_id="original", allow_new_operation=False):
         self.table, self.job_id = table, job_id
         self.owner = uuid4().hex
         now = int(time.time())
         self.deadline = now + LEASE_SECONDS
         item = dict(job_id=job_id, task_id=task_id, mode=mode, status="RUNNING",
-                    owner=self.owner, lease_until=self.deadline, phase="START", attempts=1)
+                    owner=self.owner, lease_until=self.deadline, phase="START", attempts=1,
+                    operation_id=operation_id)
         try:
             table.put_item(Item=item, ConditionExpression="attribute_not_exists(job_id)")
         except ClientError as exc:
@@ -38,9 +39,29 @@ class JobJournal:
                 raise
             existing = table.get_item(Key={"job_id": job_id}, ConsistentRead=True).get("Item", {})
             if existing.get("status") in {"ISSUED", "GENERATED"}:
+                if allow_new_operation and existing.get("operation_id") != operation_id:
+                    # Compare the exact prior owner to prevent two new operations
+                    # from replacing a completed lock concurrently.
+                    names = {"#s": "status", "#owner": "owner"}
+                    values = {":done": existing["status"]}
+                    condition = "#s = :done AND attribute_not_exists(#owner)"
+                    if existing.get("owner"):
+                        condition = "#s = :done AND #owner = :previous"
+                        values[":previous"] = existing["owner"]
+                    try:
+                        table.put_item(Item=item, ConditionExpression=condition,
+                                       ExpressionAttributeNames=names, ExpressionAttributeValues=values)
+                    except ClientError as exc:
+                        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                            raise
+                        raise JobBusy("Another operation claimed this task.") from exc
+                    self.item, self.done = item, False
+                    return
                 self.item = existing
                 self.done = True
                 return
+            if existing.get("operation_id", "original") != operation_id:
+                raise ReconciliationRequired("Another operation owns this task; reconcile it before starting a new one.")
             if existing.get("status") == "NEEDS_REVIEW" or "phase" not in existing:
                 raise ReconciliationRequired("Legacy or uncertain job requires reconciliation; do not reissue.")
             try:

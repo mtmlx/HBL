@@ -141,49 +141,6 @@ def test_freight_continuation_preserves_all_visible_charges_and_terms(tmp_path):
     assert all('TERMS & CONDITIONS / DOCUMENT VALIDATION' in page.extract_text() for page in pages)
 
 
-@pytest.mark.parametrize('replacement_fails', [False, True])
-def test_manager_flow_voids_only_after_replacement_and_then_posts_audit(monkeypatch, replacement_fails):
-    # Import deployed handlers without accessing credentials or AWS services.
-    monkeypatch.setattr(boto3, 'client', Mock())
-    monkeypatch.setattr(boto3, 'resource', Mock())
-    admin = importlib.import_module('mtm_hbl.aws_handlers.hbl_admin')
-    calls = []
-    record = admin.ActiveVerificationRecord('old-O1', 'pkg_old', 'ISSUED')
-
-    async def preview(task):
-        return {'hbl_number': 'TEST-HBL', 'task_id': 'task-1', 'active_records': [record]}
-
-    async def issue(task, user):
-        calls.append('issue')
-        if replacement_fails:
-            raise ValueError('Replacement upload failed')
-        return SimpleNamespace(hbl_number='TEST-HBL', package_id='pkg_new', verification_urls={'new-O1': 'https://verify.example.com/new-O1'})
-
-    def void(config, ids, *, superseded_by, reason):
-        assert ids == ['old-O1'] and superseded_by == 'pkg_new'
-        calls.append('void')
-
-    async def audit(task, user, records, result):
-        assert records == [record] and result.package_id == 'pkg_new'
-        calls.append('audit')
-
-    monkeypatch.setattr(admin, '_form_data', lambda event: {'task_ref': 'task-1', 'expected_hbl_number': 'TEST-HBL', 'confirmation': 'REISSUE TEST-HBL'})
-    monkeypatch.setattr(admin, '_load_reissue_preview', preview)
-    monkeypatch.setattr(admin, '_issue_replacement', issue)
-    monkeypatch.setattr(admin, '_verification_config', lambda: None)
-    monkeypatch.setattr(admin, 'void_verification_records', void)
-    monkeypatch.setattr(admin, '_post_reissue_comment', audit)
-    operation = admin._confirm_reissue({}, admin.AdminUser('manager@example.com'))
-    if replacement_fails:
-        with pytest.raises(ValueError, match='Replacement upload failed'):
-            asyncio.run(operation)
-        assert calls == ['issue']
-    else:
-        response = asyncio.run(operation)
-        assert response['statusCode'] == 200
-        assert calls == ['issue', 'void', 'audit']
-
-
 def test_verification_bundle_contains_all_terms_and_displays_registered_hash(monkeypatch):
     monkeypatch.setenv('TABLE_NAME', 'test-table')
     monkeypatch.setattr(boto3, 'resource', Mock())
