@@ -40,6 +40,25 @@ flagged for reconciliation; this change does not claim automatic draft recovery.
 
 ## Required release checks
 
+### Test evidence (2026-09-16 UTC)
+
+- All 118 local tests pass, including five full-worker fault simulations using
+  the real PDF renderer/registration code, AWS emulation, and a fake ClickUp client.
+  Restart/replay retained one package ID, six verification records, matching PDF
+  SHA-256, one upload/status/comment at confirmed boundaries, and the assigned
+  three-line comment. An uncertain comment boundary quarantined instead of replaying.
+- Fourteen checks passed against a newly created real DynamoDB table. Eight
+  concurrent retry claimants produced one owner; stale owners were rejected;
+  safe checkpoints preserved artifacts; uncertain checkpoints quarantined;
+  completed and legacy jobs could not blindly repeat issuance. The table was
+  deleted and absence verified. These tests inject expired leases; they do not
+  run a real Lambda timeout or queue redrive. The reusable opt-in runner is
+  `tools/test_job_journal_aws.py`.
+- A live ClickUp trial remains pending a designated sandbox task/list. No customer
+  task, live HBL, verification record, queue setting, or deployed Lambda was changed.
+
+### Deployment checklist
+
 Live configuration inspected during development: worker timeout 180 seconds,
 queue visibility 180 seconds, batch size 1, DLQ redrive after three receives.
 Before deploying this candidate:
