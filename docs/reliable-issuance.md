@@ -1,4 +1,8 @@
-# Reliable issuance: candidate, not deployed
+# Reliable issuance
+
+**Deployed 2026-09-16 UTC at runtime revision `55abd79` after explicit user approval.**
+See [deployment record](deployment-2026-09-16.md). The development/release checklist
+below records the preceding stages and remaining live fault-injection limits.
 
 This change builds on the captured AWS source in PR #2. The historical baseline
 is intentionally unchanged. The changed runtime files and new job journal

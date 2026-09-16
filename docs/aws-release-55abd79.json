@@ -1,0 +1,47 @@
+{
+  "deployment": {
+    "commit": "55abd79560b403d970f27ac920252b0bd1adbe5f",
+    "approved_by_user": true,
+    "started": "2026-09-16T04:59:32.290068+00:00",
+    "functions": {
+      "mtm-hbl-verification-dev": {
+        "version": "1",
+        "expected_sha256": "SAGVjZ98KYF3MCbukJKb8S2KWACNZ5kZj2gEK/P1gsA=",
+        "updated": true,
+        "smoke_passed": true,
+        "code_sha256": "SAGVjZ98KYF3MCbukJKb8S2KWACNZ5kZj2gEK/P1gsA=",
+        "revision_id": "3b82c49f-c2b4-451f-b906-3481ed141262"
+      },
+      "mtm-hbl-original-webhook-dev": {
+        "version": "1",
+        "expected_sha256": "j4A+Sqabss11aRNCy2RzQ+RMtxF6jS9dBTjYwX1jsgI=",
+        "updated": true,
+        "smoke_passed": true,
+        "code_sha256": "j4A+Sqabss11aRNCy2RzQ+RMtxF6jS9dBTjYwX1jsgI=",
+        "revision_id": "bd650071-4f87-4623-9f33-463c14986f3d"
+      },
+      "mtm-hbl-original-worker-dev": {
+        "version": "1",
+        "expected_sha256": "j4A+Sqabss11aRNCy2RzQ+RMtxF6jS9dBTjYwX1jsgI=",
+        "updated": true,
+        "smoke_passed": true,
+        "code_sha256": "j4A+Sqabss11aRNCy2RzQ+RMtxF6jS9dBTjYwX1jsgI=",
+        "revision_id": "010c4149-c928-4554-948c-4884db3e3ce0"
+      }
+    },
+    "queue_resumed": true,
+    "live_issuance_test": false,
+    "completed": "2026-09-16T05:00:31.052053+00:00"
+  },
+  "validation": {
+    "source_file_matches": {
+      "mtm-hbl-original-worker-dev": 58,
+      "mtm-hbl-original-webhook-dev": 58,
+      "mtm-hbl-verification-dev": 5
+    },
+    "authenticated_dry_run": true,
+    "public_verification_hash_matches": true,
+    "no_issuance_invoked": true,
+    "clickup_original_status_comment_unchanged": true
+  }
+}
