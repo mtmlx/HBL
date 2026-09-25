@@ -152,6 +152,53 @@ def test_queue_failure_is_not_acknowledged(monkeypatch):
     assert process.await_count == 1
 
 
+@pytest.mark.parametrize('phase,mode', [('START', 'draft'), ('READY', 'draft'), ('START', 'issue')])
+def test_validation_block_acknowledged_only_before_draft_work(jobs, monkeypatch, phase, mode):
+    module = worker(monkeypatch)
+    from mtm_hbl.config import Settings
+    from mtm_hbl.clickup_hbl_generator import DraftValidationBlocked
+    monkeypatch.setattr(module, '_jobs_table', lambda: jobs)
+    monkeypatch.setattr(module, '_lambda_settings', lambda: Settings())
+    monkeypatch.setattr(module, '_clickup_access_token', lambda: 'test')
+    client = AsyncMock()
+    monkeypatch.setattr(module, 'ClickUpClient', lambda *a: client)
+    def fail_validation(**kwargs):
+        if phase != 'START':
+            kwargs['checkpoint'](phase, artifact())
+        raise DraftValidationBlocked('Draft blocked: Ready For Draft must be checked after human review.')
+    generate = AsyncMock(side_effect=fail_validation)
+    monkeypatch.setattr(module, 'generate_hbl_from_clickup', generate)
+    payload = {'task_id': 'task', 'mode': mode, 'request_id': 'request-1'}
+    if phase != 'START' or mode != 'draft':
+        with pytest.raises(DraftValidationBlocked):
+            asyncio.run(module._process_message(payload))
+        assert jobs.get_item(Key={'job_id': module._job_id(mode, 'task', payload)})['Item']['status'] == 'RETRYABLE'
+        return
+    result = asyncio.run(module._process_message(payload))
+    assert result['status'] == 'BLOCKED'
+    row = jobs.get_item(Key={'job_id': module._job_id(mode, 'task', payload)})['Item']
+    assert row['status'] == 'BLOCKED' and row['phase'] == 'START'
+    assert 'Ready For Draft' in row['artifact_json']
+    assert 'No PDF was created' in client.post_comment.call_args.args[1]
+    # SQS redelivery acknowledges the same rejected request without redoing work.
+    assert asyncio.run(module._process_message(payload))['status'] == 'BLOCKED'
+    assert generate.await_count == 1 and client.post_comment.await_count == 1
+    # A fresh operator request can be evaluated again after data correction.
+    payload['request_id'] = 'request-2'
+    assert asyncio.run(module._process_message(payload))['status'] == 'BLOCKED'
+    assert generate.await_count == 2
+
+
+def test_block_status_cannot_quarantine_original_or_prepared_document(jobs):
+    journal = acquire(jobs)
+    with pytest.raises(ReconciliationRequired):
+        journal.block_draft('not approved')
+    draft = JobJournal(jobs, 'draft#task#request', 'task', 'draft')
+    draft.save('READY', artifact())
+    with pytest.raises(ReconciliationRequired):
+        draft.block_draft('readiness withdrawn')
+
+
 @pytest.mark.parametrize('content', [b'pdf', b'corrupt'])
 def test_worker_resume_downloads_existing_package_never_generates(jobs, monkeypatch, tmp_path, content):
     module = worker(monkeypatch)

@@ -10,6 +10,13 @@ from mtm_hbl.models.clickup import ClickUpCustomField, ClickUpTaskData, ClickUpU
 from tests.test_hbl_package_pdf import package_data
 
 
+def ready_data():
+    data = package_data()
+    data.cargo.total_packages = "20"
+    data.shipment.freight_term = "COLLECT"
+    return data
+
+
 class FakeClickUpClient:
     def __init__(self, task: ClickUpTaskData, values: dict[str, str]) -> None:
         self.task = task
@@ -90,7 +97,7 @@ def test_evaluate_hbl_approval_accepts_approved_for_original_boolean(app_config)
 
 
 def test_generate_from_clickup_creates_one_page_draft_when_not_approved(tmp_path, app_config):
-    data = package_data()
+    data = ready_data()
     task = ClickUpTaskData(
         id="task-1",
         custom_fields=[
@@ -99,6 +106,7 @@ def test_generate_from_clickup_creates_one_page_draft_when_not_approved(tmp_path
                 name="Canonical HBL JSON",
                 value=data.model_dump_json(),
             ),
+            ClickUpCustomField(id="e51205ba-ea9d-4755-a3fe-1648770b6671", name="Ready For Draft", value=True),
             ClickUpCustomField(id="approval", name="HBL Approval Status", value="Pending Approval"),
         ],
     )
@@ -124,7 +132,7 @@ def test_generate_from_clickup_creates_one_page_draft_when_not_approved(tmp_path
 
 
 def test_generate_from_clickup_issues_when_approved(monkeypatch, tmp_path, app_config):
-    data = package_data()
+    data = ready_data()
     task = ClickUpTaskData(
         id="task-1",
         custom_fields=[
@@ -175,7 +183,7 @@ def test_generate_from_clickup_issues_when_approved(monkeypatch, tmp_path, app_c
 
 
 def test_clickup_attachment_uses_draft_output_field(tmp_path, app_config):
-    data = package_data()
+    data = ready_data()
     task = ClickUpTaskData(
         id="task-1",
         custom_fields=[
@@ -184,6 +192,7 @@ def test_clickup_attachment_uses_draft_output_field(tmp_path, app_config):
                 name="Canonical HBL JSON",
                 value=data.model_dump_json(),
             ),
+            ClickUpCustomField(id="e51205ba-ea9d-4755-a3fe-1648770b6671", name="Ready For Draft", value=True),
             ClickUpCustomField(id="approval", name="HBL Approval Status", value="Pending Approval"),
         ],
     )
@@ -210,7 +219,7 @@ def test_clickup_attachment_uses_draft_output_field(tmp_path, app_config):
 
 
 def test_generated_comment_is_assigned_to_task_assignee(tmp_path, app_config):
-    data = package_data()
+    data = ready_data()
     task = ClickUpTaskData(
         id="task-1",
         assignees=[ClickUpUser(id="12345", username="Operator")],
@@ -220,6 +229,7 @@ def test_generated_comment_is_assigned_to_task_assignee(tmp_path, app_config):
                 name="Canonical HBL JSON",
                 value=data.model_dump_json(),
             ),
+            ClickUpCustomField(id="e51205ba-ea9d-4755-a3fe-1648770b6671", name="Ready For Draft", value=True),
             ClickUpCustomField(id="approval", name="HBL Approval Status", value="Pending Approval"),
         ],
     )

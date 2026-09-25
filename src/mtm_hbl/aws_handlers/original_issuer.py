@@ -14,7 +14,7 @@ import boto3
 from botocore.exceptions import ClientError
 
 from mtm_hbl.clickup_connector.client import ClickUpClient
-from mtm_hbl.clickup_hbl_generator import generate_hbl_from_clickup, parse_clickup_task_id, complete_clickup_artifact
+from mtm_hbl.clickup_hbl_generator import generate_hbl_from_clickup, parse_clickup_task_id, complete_clickup_artifact, DraftValidationBlocked
 from mtm_hbl.aws_handlers.job_journal import JobJournal
 from mtm_hbl.config import AppConfig, Settings
 
@@ -79,6 +79,9 @@ async def _process_message(payload: dict[str, Any]) -> dict[str, Any]:
 
     journal = JobJournal(jobs_table, job_id, task_id, mode)
     if journal.done:
+        if journal.item.get("status") == "BLOCKED":
+            return {"status": "BLOCKED", "reason": journal.artifact.get("validation_error", ""),
+                    "task_id": task_id, "mode": mode}
         return {"status": "SKIPPED", "reason": "job already completed", "task_id": task_id, "mode": mode}
     client = None
     try:
@@ -114,7 +117,13 @@ async def _process_message(payload: dict[str, Any]) -> dict[str, Any]:
                 prevent_original_overwrite=True, checkpoint=journal.save,
             )
         journal.complete(mode)
-    except Exception:
+    except Exception as exc:
+        if isinstance(exc, DraftValidationBlocked) and mode == "draft" and journal.phase == "START":
+            journal.block_draft(str(exc))
+            if client is not None and journal.claim_failure_comment():
+                await _post_failure_comment(client, task_id, str(exc), mode="draft_blocked")
+            logging.info("HBL_DRAFT_VALIDATION_BLOCKED task_id=%s reason=%s", task_id, exc)
+            return {"status": "BLOCKED", "reason": str(exc), "task_id": task_id, "mode": mode}
         try:
             journal.fail()
             if client is not None and journal.claim_failure_comment():
@@ -296,6 +305,13 @@ async def _post_failure_comment(client: ClickUpClient, task_id: str, error: str,
 
 
 def _failure_comment_text(mode: str, error: str) -> str:
+    if mode == "draft_blocked":
+        return (
+            "Draft HBL request blocked before document generation.\n\n"
+            f"{_format_error_bullets(error)}\n\n"
+            "No PDF was created or uploaded by this request. Correct and review the data, "
+            "then check Ready For Draft and submit a new draft request."
+        )
     if mode == "draft":
         heading = "Draft HBL generation failed."
         closing = "Draft processing may be partially complete. Check the existing attachment before retrying."

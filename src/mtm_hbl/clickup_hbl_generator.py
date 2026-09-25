@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Callable, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from mtm_hbl.clickup_connector.client import ClickUpClient
 from mtm_hbl.config import AppConfig, Settings
@@ -16,16 +16,29 @@ from mtm_hbl.models.canonical import CanonicalHblData
 from mtm_hbl.models.clickup import ClickUpTaskData
 from mtm_hbl.pdf.hbl_package import generate_bill_of_lading_draft, generate_bill_of_lading_package
 from mtm_hbl.pipeline import PipelineInput, build_review_packet
+from mtm_hbl.validation.validation_engine import ValidationEngine
+from mtm_hbl.utils.values import decimal_from_display, is_blank
 from mtm_hbl.verification.aws_repository import AwsVerificationConfig, register_issued_package
 
 
 GenerationMode = Literal["auto", "draft", "issue"]
 
 
+class DraftValidationBlocked(ValueError):
+    """Expected source-data rejection, distinct from interrupted document writes."""
+
+
 def canonical_fingerprint(data):
     values = data.model_dump(mode="json")
     fields = ("shipment", "parties", "routing", "cargo", "containers", "charges", "carrier_receipt")
     return sha256(json.dumps({k: values[k] for k in fields}, sort_keys=True).encode()).hexdigest()
+
+
+def _draft_fingerprint(data: CanonicalHblData) -> str:
+    # The model supplies a fresh audit timestamp when source JSON omits it.
+    # Compare reviewed content, not parser-generated bookkeeping.
+    values = data.model_dump(mode="json", exclude={"audit", "metadata"})
+    return sha256(json.dumps(values, sort_keys=True).encode()).hexdigest()
 
 
 class ApprovalDecision(BaseModel):
@@ -96,18 +109,25 @@ async def generate_hbl_from_clickup(
     filename_component(task_id)
     task = await client.get_task(task_id)
     clickup_values = client.extract_configured_fields(task, app_config)
-    data = _data_from_clickup_task(task, clickup_values, app_config)
+    approval = evaluate_hbl_approval(task, app_config)
+    draft_requested = mode == "draft" or (mode == "auto" and not approval.approved)
+    data = (
+        _validated_draft_data(task, clickup_values, app_config)
+        if draft_requested else _data_from_clickup_task(task, clickup_values, app_config)
+    )
     _enforce_clickup_hbl_number(data, clickup_values)
     filename_component(data.shipment.mtm_hbl_no or task_id)
     if expected_data_hash and canonical_fingerprint(data) != expected_data_hash:
         raise ValueError("Shipment changed after preview; start a fresh confirmation.")
 
-    approval = evaluate_hbl_approval(task, app_config)
+    generated_mode = _select_generation_mode(mode, approval, data)
+    if generated_mode == "draft" and not draft_requested:
+        # Auto mode can also fall back to draft when Original QA blocks issuance.
+        data = _validated_draft_data(task, clickup_values, app_config)
     warnings = [issue.message for issue in data.qa.soft_warnings]
     if data.qa.hard_errors:
         warnings.extend(issue.message for issue in data.qa.hard_errors)
 
-    generated_mode = _select_generation_mode(mode, approval, data)
     planned_output_field_id = _output_field_id_for_mode(generated_mode, app_config)
     if (
         generated_mode == "issue"
@@ -185,6 +205,12 @@ async def generate_hbl_from_clickup(
         "bucket": bucket, "region": region,
         "prevent_original_overwrite": prevent_original_overwrite,
     }
+    if generated_mode == "draft":
+        artifact["draft_guard"] = {
+            "config_dir": str(app_config.config_dir),
+            "data_sha256": _draft_fingerprint(data),
+            "pdf_sha256": sha256(pdf_path.read_bytes()).hexdigest(),
+        }
     if checkpoint:
         checkpoint("READY", artifact)
     if prepare_only:
@@ -203,6 +229,20 @@ async def complete_clickup_artifact(client, artifact: dict, *, checkpoint=None, 
 
     if phase == "READY":
         if artifact["attach"]:
+            if result.mode_generated == "draft":
+                # Recheck readiness and data immediately before the first write,
+                # including checkpoint recovery. Legacy drafts need reconciliation.
+                guard = artifact.get("draft_guard")
+                if not guard:
+                    raise ValueError("Draft lacks readiness evidence; reconcile before attachment.")
+                config = AppConfig(Path(guard["config_dir"]))
+                task = await client.get_task(result.task_id)
+                values = client.extract_configured_fields(task, config)
+                current = _validated_draft_data(task, values, config)
+                if _draft_fingerprint(current) != guard["data_sha256"]:
+                    raise ValueError("Draft data changed after preparation; review and generate a fresh draft.")
+                if sha256(Path(result.pdf_path).read_bytes()).hexdigest() != guard["pdf_sha256"]:
+                    raise ValueError("Draft PDF hash mismatch; reconcile before attachment.")
             if artifact.get("prevent_original_overwrite") and result.mode_generated == "issue" and result.clickup_output_field_id:
                 task = await client.get_task(result.task_id)
                 if _attachment_output_field_exists(task, result.clickup_output_field_id):
@@ -288,6 +328,91 @@ def _data_from_clickup_task(
         PipelineInput(clickup_task_id=task.id, clickup_values=clickup_values),
         app_config=app_config,
     )
+
+
+def _validated_draft_data(
+    task: ClickUpTaskData, clickup_values: dict[str, str], app_config: AppConfig,
+) -> CanonicalHblData:
+    """Fail closed before rendering; never render the incomplete fallback packet."""
+    trigger = app_config.clickup_fields.get("hbl_outputs", {}).get("draft_trigger", {})
+    field_id = str(trigger.get("field_id") or "").strip()
+    ready = task.field_by_id(field_id) if field_id else None
+    value = ready.value if ready else None
+    checked = value is True or (isinstance(value, str) and value.strip().casefold() == "true")
+    if not checked:
+        raise DraftValidationBlocked("Draft blocked: Ready For Draft must be checked after human review.")
+
+    try:
+        data = _canonical_json_from_task(task, app_config)
+    except ValidationError as exc:
+        # Report field locations without echoing customer data or raw JSON.
+        fields = ", ".join(".".join(map(str, error["loc"])) for error in exc.errors())
+        raise DraftValidationBlocked(f"Draft blocked: invalid Canonical HBL JSON fields: {fields}.") from exc
+    except json.JSONDecodeError as exc:
+        raise DraftValidationBlocked("Draft blocked: Canonical HBL JSON is not valid JSON.") from exc
+    if data is None:
+        raise DraftValidationBlocked("Draft blocked: valid Canonical HBL JSON is required; finish data preparation first.")
+    # ClickUp's data-preparation agent also writes the explicit task:<id> form.
+    # Normalize that representation only; unrelated IDs must still fail closed.
+    canonical_task_id = data.shipment.clickup_task_id.strip().removeprefix("task:")
+    if data.shipment.clickup_task_id.strip() and canonical_task_id != task.id:
+        raise DraftValidationBlocked("Draft blocked: canonical shipment task ID does not match this HBL task.")
+    configured_hbl = clickup_values.get("hbl_number", "").strip()
+    if configured_hbl and data.shipment.mtm_hbl_no.strip() != configured_hbl:
+        raise DraftValidationBlocked("Draft blocked: canonical HBL number does not match the ClickUp HBL number.")
+    data.shipment.clickup_task_id = task.id
+    _enforce_clickup_hbl_number(data, clickup_values)
+    ValidationEngine(app_config).validate(data)
+    errors = [issue.message for issue in data.qa.hard_errors]
+    hard_field = task.field_by_name("QA Hard Errors")
+    if hard_field and ClickUpClient._stringify_field_value(hard_field.value).strip():
+        errors.append("Resolve the ClickUp QA Hard Errors field.")
+    required = {
+        "shipment.vessel": data.shipment.vessel,
+        "shipment.voyage": data.shipment.voyage,
+        "shipment.freight_term": data.shipment.freight_term,
+        "cargo.description_raw": data.cargo.description_raw,
+    }
+    errors.extend(f"{name} is required." for name, value in required.items() if is_blank(value))
+    totals = {
+        "cargo.total_packages": data.cargo.total_packages,
+        "cargo.gross_weight": data.cargo.gross_weight,
+        "cargo.measurement": data.cargo.measurement,
+    }
+    for index, container in enumerate(data.containers):
+        for name in ("package_count", "gross_weight", "measurement"):
+            # Preserve the existing documented total-only package-count exception.
+            if name == "package_count" and not container.package_count.strip() and any(
+                warning.id == "package_counts_total_only" for warning in data.qa.soft_warnings
+            ):
+                continue
+            totals[f"containers.{index}.{name}"] = getattr(container, name)
+    for name, value in totals.items():
+        number = decimal_from_display(value)
+        if number is None or not number.is_finite() or number <= 0:
+            errors.append(f"{name} must be a positive number.")
+    visible_charges = [charge for charge in data.charges.line_items if charge.show_on_hbl]
+    if not visible_charges:
+        errors.append("At least one reviewed freight/charge line is required.")
+    for index, charge in enumerate(data.charges.line_items):
+        if not charge.show_on_hbl:
+            continue
+        prefix = f"charges.line_items.{index}"
+        for name in ("description", "rate", "currency"):
+            if is_blank(getattr(charge, name)):
+                errors.append(f"{prefix}.{name} is required.")
+        amounts = [charge.prepaid_amount, charge.collect_amount]
+        if all(is_blank(value) for value in amounts):
+            errors.append(f"{prefix} requires a prepaid or collect amount.")
+        for name in ("prepaid_amount", "collect_amount"):
+            value = getattr(charge, name)
+            if not is_blank(value):
+                number = decimal_from_display(value)
+                if number is None or not number.is_finite() or number < 0:
+                    errors.append(f"{prefix}.{name} must be a non-negative number.")
+    if errors:
+        raise DraftValidationBlocked("Draft blocked: " + " ".join(dict.fromkeys(errors)))
+    return data
 
 
 def _canonical_json_from_task(task: ClickUpTaskData, app_config: AppConfig) -> CanonicalHblData | None:
