@@ -5,7 +5,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from mtm_hbl.clickup_hbl_generator import generate_hbl_from_clickup, complete_clickup_artifact
+from mtm_hbl.clickup_hbl_generator import generate_hbl_from_clickup, complete_clickup_artifact, DraftValidationBlocked
 from mtm_hbl.config import Settings
 from mtm_hbl.models.clickup import ClickUpCustomField, ClickUpTaskData
 from tests.test_clickup_hbl_generator import FakeClickUpClient, ready_data
@@ -52,11 +52,30 @@ def test_trigger_must_have_the_configured_id(tmp_path, app_config):
     assert not client.uploaded
 
 
+def test_task_prefixed_identity_renders_and_passes_upload_revalidation(tmp_path, app_config):
+    data = ready_data()
+    data.shipment.clickup_task_id = "task:task-1"
+    client = client_for(data)
+    result = run(client, tmp_path, app_config)
+    assert result.clickup_attachment_uploaded
+    assert client.uploaded and client.commented
+
+
+@pytest.mark.parametrize("identity", ["task:another-task", "task:", "task:task:task-1"])
+def test_prefixed_wrong_identity_is_still_blocked(tmp_path, app_config, identity):
+    data = ready_data()
+    data.shipment.clickup_task_id = identity
+    client = client_for(data)
+    with pytest.raises(DraftValidationBlocked, match="task ID does not match"):
+        run(client, tmp_path, app_config)
+    assert not client.uploaded
+
+
 @pytest.mark.parametrize("payload", [None, "", "not JSON", '{"charges":{"line_items":[{"prepaid_amount":null}]}}'])
 def test_absent_or_invalid_canonical_never_falls_back_to_blank_pdf(tmp_path, app_config, payload):
     client = client_for()
     client.task.custom_fields[1].value = payload
-    with pytest.raises(ValueError):
+    with pytest.raises(DraftValidationBlocked):
         run(client, tmp_path, app_config)
     assert not client.uploaded and not client.commented
     assert not (tmp_path / "output").exists()

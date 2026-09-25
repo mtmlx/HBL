@@ -38,6 +38,9 @@ class JobJournal:
             if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
                 raise
             existing = table.get_item(Key={"job_id": job_id}, ConsistentRead=True).get("Item", {})
+            if existing.get("status") == "BLOCKED" and mode == "draft" and existing.get("phase") == "START":
+                self.item, self.done = existing, True
+                return
             if existing.get("status") in {"ISSUED", "GENERATED"}:
                 if allow_new_operation and existing.get("operation_id") != operation_id:
                     # Compare the exact prior owner to prevent two new operations
@@ -116,6 +119,12 @@ class JobJournal:
     def complete(self, mode):
         self._update("ISSUED" if mode == "issue" else "GENERATED", "COMPLETE",
                      self.item["artifact_json"], self.deadline)
+
+    def block_draft(self, reason):
+        """Acknowledge a rejected request only before any document work began."""
+        if self.item.get("mode") != "draft" or self.phase != "START":
+            raise ReconciliationRequired("Only an unstarted draft can be blocked without recovery.")
+        self._update("BLOCKED", "START", json.dumps({"validation_error": reason}), 0)
 
     def claim_failure_comment(self):
         """At most one attempt per operation; an ambiguous post is reconciled via SNS."""

@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Callable, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from mtm_hbl.clickup_connector.client import ClickUpClient
 from mtm_hbl.config import AppConfig, Settings
@@ -22,6 +22,10 @@ from mtm_hbl.verification.aws_repository import AwsVerificationConfig, register_
 
 
 GenerationMode = Literal["auto", "draft", "issue"]
+
+
+class DraftValidationBlocked(ValueError):
+    """Expected source-data rejection, distinct from interrupted document writes."""
 
 
 def canonical_fingerprint(data):
@@ -336,16 +340,26 @@ def _validated_draft_data(
     value = ready.value if ready else None
     checked = value is True or (isinstance(value, str) and value.strip().casefold() == "true")
     if not checked:
-        raise ValueError("Draft blocked: Ready For Draft must be checked after human review.")
+        raise DraftValidationBlocked("Draft blocked: Ready For Draft must be checked after human review.")
 
-    data = _canonical_json_from_task(task, app_config)
+    try:
+        data = _canonical_json_from_task(task, app_config)
+    except ValidationError as exc:
+        # Report field locations without echoing customer data or raw JSON.
+        fields = ", ".join(".".join(map(str, error["loc"])) for error in exc.errors())
+        raise DraftValidationBlocked(f"Draft blocked: invalid Canonical HBL JSON fields: {fields}.") from exc
+    except json.JSONDecodeError as exc:
+        raise DraftValidationBlocked("Draft blocked: Canonical HBL JSON is not valid JSON.") from exc
     if data is None:
-        raise ValueError("Draft blocked: valid Canonical HBL JSON is required; finish data preparation first.")
-    if data.shipment.clickup_task_id and data.shipment.clickup_task_id != task.id:
-        raise ValueError("Draft blocked: canonical shipment task ID does not match this HBL task.")
+        raise DraftValidationBlocked("Draft blocked: valid Canonical HBL JSON is required; finish data preparation first.")
+    # ClickUp's data-preparation agent also writes the explicit task:<id> form.
+    # Normalize that representation only; unrelated IDs must still fail closed.
+    canonical_task_id = data.shipment.clickup_task_id.strip().removeprefix("task:")
+    if data.shipment.clickup_task_id.strip() and canonical_task_id != task.id:
+        raise DraftValidationBlocked("Draft blocked: canonical shipment task ID does not match this HBL task.")
     configured_hbl = clickup_values.get("hbl_number", "").strip()
     if configured_hbl and data.shipment.mtm_hbl_no.strip() != configured_hbl:
-        raise ValueError("Draft blocked: canonical HBL number does not match the ClickUp HBL number.")
+        raise DraftValidationBlocked("Draft blocked: canonical HBL number does not match the ClickUp HBL number.")
     data.shipment.clickup_task_id = task.id
     _enforce_clickup_hbl_number(data, clickup_values)
     ValidationEngine(app_config).validate(data)
@@ -397,7 +411,7 @@ def _validated_draft_data(
                 if number is None or not number.is_finite() or number < 0:
                     errors.append(f"{prefix}.{name} must be a non-negative number.")
     if errors:
-        raise ValueError("Draft blocked: " + " ".join(dict.fromkeys(errors)))
+        raise DraftValidationBlocked("Draft blocked: " + " ".join(dict.fromkeys(errors)))
     return data
 
 

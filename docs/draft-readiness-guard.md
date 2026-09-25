@@ -14,7 +14,21 @@ The explicit draft path and automatic fallback to draft both apply the guard. Or
 
 Before uploading a prepared draft, the generator re-reads ClickUp, revalidates readiness, compares reviewed content, and verifies the local PDF hash. A withdrawn checkbox, changed data, corrupted PDF or legacy prepared draft without readiness evidence stops attachment. Already attached legacy files are not automatically replaced.
 
-This validates readiness, structure and internal consistency. It does not determine commercial freight authorization or reconcile a vessel against external shipment/source documents. Those remain part of the human review before checking Ready For Draft. Validation failures still follow the existing retry/DLQ mechanism; this change does not acknowledge, purge or redrive failed messages.
+This validates readiness, structure and internal consistency. It does not determine commercial freight authorization or reconcile a vessel against external shipment/source documents. Those remain part of the human review before checking Ready For Draft.
+
+## Validation rejection handling, September 25, 2026
+
+The initial guard rejected canonical IDs written as `task:<id>`, even when the ID matched the HBL task. It now accepts that exact representation while still rejecting unrelated IDs and mismatched HBL numbers.
+
+Draft readiness and canonical-data errors now raise `DraftValidationBlocked`. Only draft requests still at the journal's `START` phase are acknowledged as `BLOCKED`, with the reason retained in the journal and an explanatory ClickUp comment attempted once. Duplicate deliveries of that request stay blocked; after correction, an operator must submit a new request. Malformed JSON and schema errors report field locations without copying raw customer data.
+
+Errors after preparation, uncertain writes, service failures and Original issuance retain their recovery behavior and alarms. Prepared drafts are still revalidated before attachment. No historical DLQ messages are automatically redriven or purged.
+
+- Full suite: **204 passed**. Added coverage for the prefixed task ID, wrong IDs, blocked-request redelivery, fresh requests after a block, and preservation of recovery for prepared drafts and Originals.
+- Read-only validation against the current GOSZX26061961 task passes after normalization. GOSZX26071299 remains blocked with Ready For Draft unchecked; its freight fields also remain incomplete. Both tasks lack Original approval.
+- Worker version **4**, deployed September 25 at 19:51 UTC. AWS package SHA-256: `yRCiYDtxSN2sSC1cPOcfaU4vZdm9qLewKoURHhMEBdw=`.
+- The package replaces only the generator, worker handler and job journal modules. All dependencies, rendering assets and configuration are preserved. This incident correction makes no typography or layout changes; the existing PDF renderer still uses Helvetica.
+- Rollback ZIP and verification evidence are retained under `runs/hbl-incident-20260925/` in the parent workspace. When rolling back, retain BLOCKED job records; old code does not understand that terminal status, so do not redrive those requests into the old worker.
 
 ## Validation and deployment, September 23, 2026
 
