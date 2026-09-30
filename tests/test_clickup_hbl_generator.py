@@ -12,7 +12,7 @@ from tests.test_hbl_package_pdf import package_data
 
 def ready_data():
     data = package_data()
-    data.cargo.total_packages = "20"
+    data.cargo.total_packages = str(sum(int(item.package_count) for item in data.containers))
     data.shipment.freight_term = "COLLECT"
     return data
 

@@ -129,3 +129,6 @@ Approval and fast-path field names are configured in `config/clickup_fields.yaml
 The fastest path is to populate `Canonical HBL JSON` or one of its aliases in
 ClickUp, so generation can skip PDF extraction and render directly from structured
 data.
+# Security setup
+
+Before running or hosting the administrative API, follow [Security setup](docs/SECURITY_SETUP.md) for the required API token, browser-bound OAuth and separated AWS bootstrap/deployment roles.

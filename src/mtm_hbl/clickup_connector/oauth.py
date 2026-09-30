@@ -1,5 +1,6 @@
 import json
 import secrets
+import time
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -11,17 +12,25 @@ from mtm_hbl.config import Settings
 
 class OAuthStateStore:
     def __init__(self) -> None:
-        self._valid_states: set[str] = set()
+        self._valid_states: dict[str, tuple[str, float]] = {}
 
-    def create(self) -> str:
+    def create(self, binding: str) -> str:
+        now = time.monotonic()
+        self._valid_states = {key: value for key, value in self._valid_states.items() if value[1] > now}
         state = secrets.token_urlsafe(32)
-        self._valid_states.add(state)
+        self._valid_states[state] = (binding, now + 600)
         return state
 
-    def consume(self, state: str) -> bool:
-        if state not in self._valid_states:
+    def consume(self, state: str, binding: str) -> bool:
+        saved = self._valid_states.get(state)
+        if saved is None:
             return False
-        self._valid_states.remove(state)
+        if saved[1] <= time.monotonic():
+            self._valid_states.pop(state, None)
+            return False
+        if not binding or not secrets.compare_digest(binding.encode(), saved[0].encode()):
+            return False
+        self._valid_states.pop(state, None)
         return True
 
 

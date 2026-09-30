@@ -1,10 +1,11 @@
 from mtm_hbl.safe_paths import confined_path, filename_component
 import uvicorn
+import secrets
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
-from fastapi.responses import RedirectResponse
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
+from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel
 
 from mtm_hbl.clickup_connector.client import ClickUpClient
@@ -30,6 +31,8 @@ from mtm_hbl.pdf.hbl_package import generate_bill_of_lading_package
 from mtm_hbl.reports.qa_reporter import save_qa_json, save_qa_markdown
 from mtm_hbl.review.review_packet import save_review_packet
 from mtm_hbl.utils.file_naming import build_draft_excel_name
+from mtm_hbl.validation.validation_engine import ValidationEngine
+from mtm_hbl.resolver.customer_rules import restore_trusted_package_exception
 from mtm_hbl.verification.aws_repository import (
     AwsVerificationConfig,
     register_issued_package,
@@ -37,6 +40,43 @@ from mtm_hbl.verification.aws_repository import (
 
 app = FastAPI(title="MTM Guatemala HBL Draft Generator", version="0.1.0")
 state_store = OAuthStateStore()
+
+
+def validated_request_review(data: CanonicalHblData, settings: Settings, *, draft: bool, template_path=None):
+    data = data.model_copy(deep=True)
+    data.qa = type(data.qa)(hard_errors=list(data.qa.hard_errors))
+    app_config = AppConfig(settings.config_dir)
+    restore_trusted_package_exception(data, app_config)
+    ValidationEngine(app_config).validate(data, template_path=template_path)
+    if (draft and not data.qa.draft_generation_allowed) or (not draft and data.qa.hard_errors):
+        raise HTTPException(status_code=409, detail="Document generation is blocked by server QA.")
+    try:
+        filename_component(data.shipment.mtm_hbl_no)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return data
+
+
+def safe_output_path(directory: Path, filename: str) -> Path:
+    try:
+        return confined_path(directory / filename_component(filename), directory)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.middleware("http")
+async def authenticate_admin_request(request: Request, call_next):
+    if request.method == "GET" and request.url.path in {"/health", "/", "/auth/clickup/callback"}:
+        return await call_next(request)
+    expected = get_settings().hbl_api_token.strip()
+    if not expected:
+        return JSONResponse({"detail": "HBL_API_TOKEN is not configured."}, status_code=503)
+    scheme, _, token = request.headers.get("authorization", "").partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        return JSONResponse({"detail": "Bearer authentication required."}, status_code=401)
+    if not secrets.compare_digest(token.encode(), expected.encode()):
+        return JSONResponse({"detail": "Invalid bearer token."}, status_code=403)
+    return await call_next(request)
 
 
 class TaskReviewRequest(BaseModel):
@@ -117,6 +157,7 @@ def health() -> dict[str, str]:
 
 @app.get("/")
 async def root_oauth_callback(
+    request: Request,
     code: str = Query(""),
     state: str = Query(""),
     settings: Settings = Depends(get_settings),
@@ -126,33 +167,41 @@ async def root_oauth_callback(
             "status": "ok",
             "message": "MTM HBL API is running. Use /auth/clickup/start to connect ClickUp.",
         }
-    return await _store_clickup_oauth_token(code, state, settings)
+    return await _store_clickup_oauth_token(code, state, settings, request.cookies.get("hbl_oauth_binding", ""))
 
 
 @app.get("/auth/clickup/start")
-def start_clickup_oauth(settings: Settings = Depends(get_settings)) -> RedirectResponse:
+def start_clickup_oauth(
+    settings: Settings = Depends(get_settings), redirect: bool = Query(True),
+):
     if not settings.clickup_client_id:
         raise HTTPException(status_code=500, detail="CLICKUP_CLIENT_ID is not configured.")
-    state = state_store.create()
+    binding = secrets.token_urlsafe(32)
+    state = state_store.create(binding)
     url = ClickUpOAuthClient(settings).build_authorization_url(state)
-    return RedirectResponse(url)
+    response = RedirectResponse(url) if redirect else JSONResponse({"authorization_url": url})
+    response.set_cookie("hbl_oauth_binding", binding, max_age=600, httponly=True,
+                        secure=settings.app_base_url.startswith("https://"), samesite="lax")
+    return response
 
 
 @app.get("/auth/clickup/callback")
 async def clickup_callback(
+    request: Request,
     code: str = Query(...),
     state: str = Query(""),
     settings: Settings = Depends(get_settings),
 ) -> dict[str, str]:
-    return await _store_clickup_oauth_token(code, state, settings)
+    return await _store_clickup_oauth_token(code, state, settings, request.cookies.get("hbl_oauth_binding", ""))
 
 
 async def _store_clickup_oauth_token(
     code: str,
     state: str,
     settings: Settings,
+    binding: str,
 ) -> dict[str, str]:
-    if state and not state_store.consume(state):
+    if not state or not state_store.consume(state, binding):
         raise HTTPException(status_code=400, detail="Invalid OAuth state.")
     token = await ClickUpOAuthClient(settings).exchange_code(code)
     LocalTokenStore(settings.token_store_path).save(token)
@@ -259,7 +308,7 @@ def generate_draft(
     settings: Settings = Depends(get_settings),
 ) -> dict[str, str | bool]:
     app_config = AppConfig(settings.config_dir)
-    data = request.review_packet
+    data = validated_request_review(request.review_packet, settings, draft=True, template_path=request.template_path)
     if not data.qa.draft_generation_allowed:
         raise HTTPException(
             status_code=409,
@@ -268,14 +317,17 @@ def generate_draft(
     if not data.shipment.mtm_hbl_no:
         raise HTTPException(status_code=409, detail="HBL number is required for draft file naming.")
 
-    output_dir = Path(request.output_dir) if request.output_dir else settings.runs_dir / "manual_drafts"
+    try:
+        output_dir = confined_path(Path(request.output_dir) if request.output_dir else settings.runs_dir / "manual_drafts", settings.runs_dir)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    review_path = output_dir / "approved_review.json"
-    qa_json_path = output_dir / "qa_report.json"
-    qa_md_path = output_dir / "qa_report.md"
+    review_path = safe_output_path(output_dir, "approved_review.json")
+    qa_json_path = safe_output_path(output_dir, "qa_report.json")
+    qa_md_path = safe_output_path(output_dir, "qa_report.md")
     excel_name = build_draft_excel_name(app_config, data.shipment.mtm_hbl_no, request.version)
-    excel_path = output_dir / excel_name
+    excel_path = safe_output_path(output_dir, excel_name)
 
     save_review_packet(data, review_path)
     save_qa_json(data, qa_json_path)
@@ -300,7 +352,7 @@ def generate_package(
     request: PackageGenerationRequest,
     settings: Settings = Depends(get_settings),
 ) -> dict[str, str | bool]:
-    data = request.review_packet
+    data = validated_request_review(request.review_packet, settings, draft=request.draft)
     if not data.shipment.mtm_hbl_no:
         raise HTTPException(status_code=409, detail="HBL number is required for package file naming.")
 
@@ -329,7 +381,7 @@ def issue_dev_package(
     request: PackageIssueRequest,
     settings: Settings = Depends(get_settings),
 ) -> dict:
-    data = request.review_packet
+    data = validated_request_review(request.review_packet, settings, draft=False)
     if not data.shipment.mtm_hbl_no:
         raise HTTPException(status_code=409, detail="HBL number is required for package file naming.")
 

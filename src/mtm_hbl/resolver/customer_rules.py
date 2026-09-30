@@ -2,6 +2,27 @@ from mtm_hbl.config import AppConfig, load_yaml
 from mtm_hbl.models.canonical import CanonicalHblData, ChargeLine, Container, QaIssue
 
 
+def restore_trusted_package_exception(data: CanonicalHblData, app_config: AppConfig) -> None:
+    """Rebuild a narrow approved exception from installed configuration, never QA input."""
+    if data.scope.owner_country != "Guatemala":
+        return
+    for path in sorted((app_config.config_dir / "customers").glob("*.yaml")):
+        for learned in load_yaml(path).get("learned_examples", {}).values():
+            cargo = learned.get("cargo") or {}
+            containers = learned.get("containers") or []
+            if (
+                learned.get("approved_override") is True
+                and learned.get("package_count_source") == "total_only"
+                and learned.get("hbl_no") == data.shipment.mtm_hbl_no
+                and str(cargo.get("total_packages", "")) == data.cargo.total_packages
+                and containers
+                and sorted(str(item.get("container_no", "")) for item in containers)
+                == sorted(item.container_no for item in data.containers)
+            ):
+                _apply_learned_example(data, {"package_count_source": "total_only"})
+                return
+
+
 def apply_customer_profile(
     data: CanonicalHblData,
     app_config: AppConfig,
