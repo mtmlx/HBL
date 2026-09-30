@@ -37,14 +37,17 @@ def package_data():
         "2 containers said to contain 1,701 packages\n"
         "72 units tricycle in CKD condition and spare parts"
     )
+    data.cargo.total_packages = "1701"
     data.cargo.gross_weight = "41704.000"
     data.cargo.measurement = "136.000"
     data.containers[0].container_no = "ONEU5863839"
     data.containers[0].seal_no = "CN47063BF"
     data.containers[0].gross_weight = "20789.000"
     data.containers[0].measurement = "68.000"
+    data.containers[0].package_count = "850"
     data.containers[0].marks_and_numbers = "N/M"
     second = data.containers[0].model_copy(deep=True)
+    second.package_count = "851"
     second.container_no = "NYKU5174452"
     second.seal_no = "CN47140BF"
     second.gross_weight = "20915.000"

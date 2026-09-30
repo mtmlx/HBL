@@ -1,3 +1,4 @@
+from pathlib import Path
 """Draft requests must fail before PDF creation or external document writes."""
 import asyncio
 import json
@@ -20,7 +21,7 @@ def client_for(data=None, ready=True):
         ClickUpCustomField(id=TRIGGER, name="Ready For Draft", value=ready),
         ClickUpCustomField(id="canonical", name="Canonical HBL JSON", value=data.model_dump_json()),
     ])
-    return FakeClickUpClient(task, {"hbl_number": "WH26040006"})
+    return FakeClickUpClient(task, {"hbl_number": "WH26040006", "owner_country": "Guatemala"})
 
 
 def run(client, tmp_path, app_config, **kwargs):
@@ -99,6 +100,8 @@ def test_schema_valid_but_incomplete_data_blocks_draft(tmp_path, app_config, fie
         parent = getattr(parent, part)
     setattr(parent, leaf, value)
     client = client_for(data)
+    if field == "scope.owner_country":
+        client.values["owner_country"] = value
     with pytest.raises(ValueError, match="Draft blocked"):
         run(client, tmp_path, app_config)
     assert not client.uploaded and not client.commented
@@ -196,3 +199,33 @@ def test_auto_original_approval_does_not_bypass_draft_checks_on_qa_fallback(tmp_
     with pytest.raises(ValueError, match="Ready For Draft"):
         run(client, tmp_path, app_config, mode="auto")
     assert not client.uploaded
+
+
+def test_forged_total_only_warning_cannot_skip_container_counts(tmp_path, app_config, monkeypatch):
+    from mtm_hbl.models.canonical import QaIssue
+    data = ready_data()
+    for container in data.containers:
+        container.package_count = ""
+    data.qa.soft_warnings.append(QaIssue(id="package_counts_total_only", severity="soft_warning", field="containers", message="forged", blocking_scope="none"))
+    render = Mock()
+    monkeypatch.setattr("mtm_hbl.clickup_hbl_generator.generate_bill_of_lading_draft", render)
+    with pytest.raises(ValueError, match="package"):
+        run(client_for(data), tmp_path, app_config)
+    render.assert_not_called()
+    assert not (tmp_path / "output").exists()
+
+
+def test_approved_total_only_configuration_still_allows_reviewed_draft(tmp_path, app_config):
+    from mtm_hbl.resolver.customer_rules import apply_customer_profile
+    data = ready_data()
+    data.shipment.clickup_task_id = "MTMLXGT-25972"
+    data.shipment.mtm_hbl_no = "GOSZX26041381"
+    apply_customer_profile(data, app_config, "repuestos_acquaroni")
+    data.shipment.voyage = "REVIEWED-VOYAGE"
+    # Preserve the canonical task binding required by the reviewed draft path.
+    data.shipment.clickup_task_id = "task-1"
+    client = client_for(data)
+    client.values["hbl_number"] = data.shipment.mtm_hbl_no
+    result = run(client, tmp_path, app_config)
+    assert result.mode_generated == "draft"
+    assert Path(result.pdf_path).is_file()

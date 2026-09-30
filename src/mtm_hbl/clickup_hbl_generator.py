@@ -19,6 +19,8 @@ from mtm_hbl.pipeline import PipelineInput, build_review_packet
 from mtm_hbl.validation.validation_engine import ValidationEngine
 from mtm_hbl.utils.values import decimal_from_display, is_blank
 from mtm_hbl.verification.aws_repository import AwsVerificationConfig, register_issued_package
+from mtm_hbl.validation.validation_engine import ValidationEngine
+from mtm_hbl.resolver.customer_rules import restore_trusted_package_exception
 
 
 GenerationMode = Literal["auto", "draft", "issue"]
@@ -116,6 +118,10 @@ async def generate_hbl_from_clickup(
         if draft_requested else _data_from_clickup_task(task, clickup_values, app_config)
     )
     _enforce_clickup_hbl_number(data, clickup_values)
+    data.scope.owner_country = clickup_values.get("owner_country", "").strip()
+    data.qa = type(data.qa)(hard_errors=list(data.qa.hard_errors))
+    restore_trusted_package_exception(data, app_config)
+    ValidationEngine(app_config).validate(data)
     filename_component(data.shipment.mtm_hbl_no or task_id)
     if expected_data_hash and canonical_fingerprint(data) != expected_data_hash:
         raise ValueError("Shipment changed after preview; start a fresh confirmation.")
@@ -323,6 +329,7 @@ def _data_from_clickup_task(
     canonical = _canonical_json_from_task(task, app_config)
     if canonical:
         canonical.shipment.clickup_task_id = task.id
+        canonical.qa = type(canonical.qa)(hard_errors=list(canonical.qa.hard_errors))
         return canonical
     return build_review_packet(
         PipelineInput(clickup_task_id=task.id, clickup_values=clickup_values),
@@ -362,6 +369,9 @@ def _validated_draft_data(
         raise DraftValidationBlocked("Draft blocked: canonical HBL number does not match the ClickUp HBL number.")
     data.shipment.clickup_task_id = task.id
     _enforce_clickup_hbl_number(data, clickup_values)
+    data.scope.owner_country = clickup_values.get("owner_country", "").strip()
+    data.qa = type(data.qa)(hard_errors=list(data.qa.hard_errors))
+    restore_trusted_package_exception(data, app_config)
     ValidationEngine(app_config).validate(data)
     errors = [issue.message for issue in data.qa.hard_errors]
     hard_field = task.field_by_name("QA Hard Errors")
@@ -453,8 +463,7 @@ def _json_block_from_text(text: str) -> str:
 
 def _enforce_clickup_hbl_number(data: CanonicalHblData, clickup_values: dict[str, str]) -> None:
     clickup_hbl = clickup_values.get("hbl_number", "").strip()
-    if clickup_hbl:
-        data.shipment.mtm_hbl_no = clickup_hbl
+    data.shipment.mtm_hbl_no = clickup_hbl
 
 
 def _select_generation_mode(
@@ -477,7 +486,10 @@ def _select_generation_mode(
 
 def _default_output_dir(runs_dir: Path, task_id: str, data: CanonicalHblData) -> Path:
     suffix = data.shipment.mtm_hbl_no or "hbl"
-    return runs_dir / "clickup_hbl_data" / f"{task_id}_{suffix}"
+    filename_component(task_id)
+    filename_component(suffix)
+    base = confined_path(runs_dir / "clickup_hbl_data", runs_dir)
+    return confined_path(base / f"{task_id}_{suffix}", runs_dir)
 
 
 def _require_issuance_config(verification_base_url: str, bucket: str, table: str) -> None:

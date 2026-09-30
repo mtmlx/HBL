@@ -21,6 +21,12 @@ echo "Account: ${ACCOUNT_ID}"
 echo "Region: ${REGION}"
 echo "Environment: ${ENVIRONMENT}"
 
+# The ordinary deploy identity cannot modify IAM permissions.
+if ! ROLE_ARN="$(aws iam get-role --role-name "${ROLE_NAME}" --query Role.Arn --output text)"; then
+  echo "Missing execution role. An administrator must run scripts/bootstrap_iam.sh first." >&2
+  exit 1
+fi
+
 mkdir -p "${BUILD_DIR}"
 
 if aws s3api head-bucket --bucket "${BUCKET_NAME}" >/dev/null 2>&1; then
@@ -57,53 +63,6 @@ else
     --region "${REGION}" >/dev/null
   aws dynamodb wait table-exists --table-name "${TABLE_NAME}" --region "${REGION}"
 fi
-
-TRUST_POLICY="${BUILD_DIR}/trust-policy.json"
-cat > "${TRUST_POLICY}" <<'JSON'
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Principal": { "Service": "lambda.amazonaws.com" },
-      "Action": "sts:AssumeRole"
-    }
-  ]
-}
-JSON
-
-if aws iam get-role --role-name "${ROLE_NAME}" >/dev/null 2>&1; then
-  echo "IAM role exists: ${ROLE_NAME}"
-else
-  echo "Creating IAM role: ${ROLE_NAME}"
-  aws iam create-role \
-    --role-name "${ROLE_NAME}" \
-    --assume-role-policy-document "file://${TRUST_POLICY}" >/dev/null
-fi
-
-aws iam attach-role-policy \
-  --role-name "${ROLE_NAME}" \
-  --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole >/dev/null
-
-INLINE_POLICY="${BUILD_DIR}/lambda-policy.json"
-cat > "${INLINE_POLICY}" <<JSON
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Action": ["dynamodb:GetItem"],
-      "Resource": "arn:aws:dynamodb:${REGION}:${ACCOUNT_ID}:table/${TABLE_NAME}"
-    }
-  ]
-}
-JSON
-aws iam put-role-policy \
-  --role-name "${ROLE_NAME}" \
-  --policy-name "${POLICY_NAME}" \
-  --policy-document "file://${INLINE_POLICY}" >/dev/null
-
-ROLE_ARN="$(aws iam get-role --role-name "${ROLE_NAME}" --query Role.Arn --output text)"
 
 echo "Packaging Lambda function"
 rm -f "${ZIP_PATH}"

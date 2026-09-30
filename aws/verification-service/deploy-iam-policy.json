@@ -74,27 +74,23 @@
       ]
     },
     {
-      "Sid": "IamForLambdaExecutionRole",
+      "Sid": "ReadPreprovisionedLambdaExecutionRole",
       "Effect": "Allow",
       "Action": [
-        "iam:CreateRole",
-        "iam:GetRole",
-        "iam:AttachRolePolicy",
-        "iam:PutRolePolicy",
-        "iam:PassRole"
+        "iam:GetRole"
       ],
       "Resource": "arn:aws:iam::ACCOUNT_ID:role/mtm-hbl-verification-lambda-role-ENVIRONMENT"
     },
     {
-      "Sid": "AllowAttachBasicLambdaExecutionPolicy",
+      "Sid": "PassPreprovisionedRoleOnlyToLambda",
       "Effect": "Allow",
       "Action": [
-        "iam:AttachRolePolicy"
+        "iam:PassRole"
       ],
       "Resource": "arn:aws:iam::ACCOUNT_ID:role/mtm-hbl-verification-lambda-role-ENVIRONMENT",
       "Condition": {
-        "ArnEquals": {
-          "iam:PolicyARN": "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+        "StringEquals": {
+          "iam:PassedToService": "lambda.amazonaws.com"
         }
       }
     }

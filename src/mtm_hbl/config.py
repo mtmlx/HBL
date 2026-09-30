@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     clickup_workspace_id: str = ""
     app_base_url: str = "http://localhost:8000"
     app_secret_key: str = "change-me-for-local-development"
+    hbl_api_token: str = ""
     runs_dir: Path = Path("runs")
     config_dir: Path = Path("config")
     token_store_path: Path = Path("runs/clickup_token.json")

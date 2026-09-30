@@ -17,6 +17,12 @@ class ExcelWriteError(RuntimeError):
     pass
 
 
+def _set_literal_cell(cell, value: object) -> None:
+    cell.value = value
+    if isinstance(value, str):
+        cell.data_type = "s"
+
+
 class ExcelHblWriter:
     def __init__(self, app_config: AppConfig) -> None:
         self.app_config = app_config
@@ -77,7 +83,7 @@ class ExcelHblWriter:
                         raise ExcelWriteError(
                             f"Cell {cell} is inside merged range {merged_range}; configure top-left cell."
                         )
-            target.value = value
+            _set_literal_cell(target, value)
             if isinstance(value, str) and "\n" in value:
                 alignment = copy(target.alignment)
                 alignment.wrap_text = True
@@ -106,7 +112,7 @@ class ExcelHblWriter:
         start_row, start_col = coordinate_to_tuple(start_cell)
         lines = [line.strip() for line in value.splitlines() if line.strip()]
         if not lines:
-            sheet[start_cell].value = ""
+            _set_literal_cell(sheet[start_cell], "")
             return
         for index, line in enumerate(lines):
             row = start_row + index
@@ -115,7 +121,7 @@ class ExcelHblWriter:
             if isinstance(target, MergedCell) or (index > 0 and target.value not in (None, "")):
                 previous = sheet[f"{get_column_letter(start_col)}{row - 1}"]
                 remaining = " ".join(lines[index:])
-                previous.value = f"{previous.value} {remaining}".strip()
+                _set_literal_cell(previous, f"{previous.value} {remaining}".strip())
                 break
             if isinstance(target.value, str) and target.value.startswith("="):
                 raise ExcelWriteError(f"Refusing to overwrite formula cell {coordinate}.")
@@ -127,7 +133,7 @@ class ExcelHblWriter:
                     target.alignment = copy(source.alignment)
                     target.border = copy(source.border)
                     target.fill = copy(source.fill)
-            target.value = line
+            _set_literal_cell(target, line)
             if len(lines) > 4 or len(line) > 45:
                 font = copy(target.font)
                 font.sz = 9
@@ -158,7 +164,7 @@ class ExcelHblWriter:
         target = sheet[cell]
         if isinstance(target.value, str) and target.value.startswith("="):
             raise ExcelWriteError(f"Refusing to overwrite formula cell {cell}.")
-        target.value = value
+        _set_literal_cell(target, value)
 
         font = copy(target.font)
         font.sz = max(float(font.sz or 0), 9)
@@ -181,7 +187,7 @@ class ExcelHblWriter:
         start_row, start_col = coordinate_to_tuple(start_cell)
         for offset, line in enumerate(lines):
             target = sheet[f"{get_column_letter(start_col)}{start_row + offset}"]
-            target.value = line
+            _set_literal_cell(target, line)
             font = copy(target.font)
             font.sz = 9
             target.font = font
@@ -204,25 +210,25 @@ class ExcelHblWriter:
             if key == "gross_weight_start":
                 self._copy_container_measure_style(sheet, start_row, row, start_col)
                 value = self._number_for_excel(container.gross_weight)
-                target.value = value
+                _set_literal_cell(target, value)
                 target.number_format = '#,##0.000'
                 if value != "":
                     self._write_unit_label(sheet, row, start_col + 1, container.gross_weight_unit, start_row)
             elif key == "measurement_start":
                 self._copy_container_measure_style(sheet, start_row, row, start_col)
                 value = self._number_for_excel(container.measurement)
-                target.value = value
+                _set_literal_cell(target, value)
                 target.number_format = '#,##0.000'
                 if value != "":
                     self._write_unit_label(sheet, row, start_col + 1, container.measurement_unit, start_row)
                 else:
-                    sheet[f"{get_column_letter(start_col + 1)}{row}"].value = None
+                    _set_literal_cell(sheet[f"{get_column_letter(start_col + 1)}{row}"], None)
 
     def _write_container_marks_block(self, sheet, data: CanonicalHblData) -> None:
         for row in range(33, 51):
             for column in ["B", "C"]:
-                sheet[f"{column}{row}"].value = None
-        sheet["B32"].value = "MARKS & NOS.:"
+                _set_literal_cell(sheet[f"{column}{row}"], None)
+        _set_literal_cell(sheet["B32"], "MARKS & NOS.:")
 
         marks = [
             line.strip()
@@ -241,7 +247,7 @@ class ExcelHblWriter:
 
     @staticmethod
     def _write_small_mark_cell(target, value: str) -> None:
-        target.value = value
+        _set_literal_cell(target, value)
         font = copy(target.font)
         font.sz = 7
         target.font = font
@@ -257,22 +263,22 @@ class ExcelHblWriter:
             for column in ["B", "D", "F", "H", "J", "L"]:
                 if row > start_row:
                     self._copy_cell_style(sheet[f"{column}{row - 1}"], sheet[f"{column}{row}"])
-                sheet[f"{column}{row}"].value = None
+                _set_literal_cell(sheet[f"{column}{row}"], None)
         for offset, item in enumerate(data.charges.line_items[:max_rows]):
             row = start_row + offset
-            sheet[f"B{row}"].value = item.description
-            sheet[f"D{row}"].value = self._number_for_excel(item.rate)
+            _set_literal_cell(sheet[f"B{row}"], item.description)
+            _set_literal_cell(sheet[f"D{row}"], self._number_for_excel(item.rate))
             sheet[f"D{row}"].number_format = '#,##0.00'
             rate_alignment = copy(sheet[f"D{row}"].alignment)
             rate_alignment.shrink_to_fit = True
             sheet[f"D{row}"].alignment = rate_alignment
-            sheet[f"F{row}"].value = item.unit
-            sheet[f"H{row}"].value = item.currency
+            _set_literal_cell(sheet[f"F{row}"], item.unit)
+            _set_literal_cell(sheet[f"H{row}"], item.currency)
             if item.prepaid_amount:
-                sheet[f"J{row}"].value = self._number_for_excel(item.prepaid_amount)
+                _set_literal_cell(sheet[f"J{row}"], self._number_for_excel(item.prepaid_amount))
                 sheet[f"J{row}"].number_format = '#,##0.00'
             if item.collect_amount:
-                sheet[f"L{row}"].value = self._number_for_excel(item.collect_amount)
+                _set_literal_cell(sheet[f"L{row}"], self._number_for_excel(item.collect_amount))
                 sheet[f"L{row}"].number_format = '#,##0.00'
         if len(data.charges.line_items) > 6 and sheet["B65"].data_type == "f":
             sheet["B65"].value = "=SUM(J55:J61)+SUM(L55:L61)"
@@ -290,7 +296,7 @@ class ExcelHblWriter:
         target = sheet[f"{get_column_letter(col)}{row}"]
         if row != start_row:
             self._copy_cell_style(sheet[f"{get_column_letter(col)}{start_row}"], target)
-        target.value = value
+        _set_literal_cell(target, value)
 
     @staticmethod
     def _copy_cell_style(source, target) -> None:

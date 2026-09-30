@@ -78,3 +78,28 @@ def test_http_default_preserves_per_task_output_routing(monkeypatch, tmp_path):
     monkeypatch.setattr(main, 'generate_hbl_from_clickup', generate)
     asyncio.run(main.generate_hbl_from_clickup_link(main.ClickUpHblGenerationRequest(task_ref='task-1'), Settings(runs_dir=tmp_path)))
     assert generate.call_args.kwargs['output_dir'] is None
+
+
+@pytest.mark.parametrize('symlink', [False, True])
+def test_http_draft_output_stays_under_runs_root(monkeypatch, tmp_path, symlink):
+    from mtm_hbl.api import main
+    from openpyxl import Workbook
+    from tests.conftest import valid_data
+    root = tmp_path / 'runs'
+    root.mkdir()
+    outside = tmp_path / 'other'
+    outside.mkdir()
+    template = tmp_path / 'template.xlsx'
+    Workbook().save(template)
+    output = outside / 'never-created'
+    if symlink:
+        (root / 'link').symlink_to(outside, target_is_directory=True)
+        output = root / 'link' / 'never-created'
+    writer = Mock(side_effect=AssertionError('write must not begin'))
+    monkeypatch.setattr(main, 'ExcelHblWriter', writer)
+    request = main.DraftGenerationRequest(review_packet=valid_data(), template_path=str(template), output_dir=str(output))
+    with pytest.raises(HTTPException) as error:
+        main.generate_draft(request, Settings(runs_dir=root))
+    assert error.value.status_code == 422
+    assert not (outside / 'never-created').exists()
+    writer.assert_not_called()
